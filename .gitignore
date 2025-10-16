@@ -1,0 +1,7 @@
+/data/gen/
+*.pt
+*.mid
+*.idea
+*.DS_Store
+runs_initial/
+__pycache__
