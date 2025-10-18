@@ -1,3 +1,5 @@
+from typing import List
+
 import torch
 import numpy as np
 from h_event_processor import HEventProcessor
@@ -21,11 +23,14 @@ class MusicGenerator:
             top_k: int = 20,
             include_initial=False,
             base_instr=40,
+            instruments_lst=None,
             instr_range=6
     ):
         """
         Generate a sequence of music tokens from a prompt.
         """
+        if instruments_lst is None:
+            instruments_lst = list()
         if include_initial:
             generated = list(prompt_tokens)
         else:
@@ -56,7 +61,7 @@ class MusicGenerator:
                 print("=" * 60)
 
             pitch_logits, dur_logits, vel_logits, instr_logits, hidden_states = self.model(
-                x, style=style_tensor, hidden_states=hidden_states
+                x, style=style_tensor, instr_context=instruments_lst,  hidden_states=hidden_states
             )
 
             # Take only last token prediction
@@ -84,7 +89,7 @@ class MusicGenerator:
             velocity = sample_topk(vel_logits)
             instr = sample_topk(instr_logits)
             # TODO, comment the below line, now generating based on the model that is trained.
-            instr = map_to_range(instr)
+            # instr = map_to_range(instr)
             next_note = np.array([pitch, duration, velocity, instr], dtype=np.int16)
             # print(f"The next note is {next_note} for the step {step}")
             generated.append(next_note)

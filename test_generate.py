@@ -11,21 +11,22 @@ np.random.seed(42)
 # Load model & processor
 processor = HEventProcessor()
 
-song = muspy.read_midi("test/pirates.mid")
+song = muspy.read_midi("test/interstellar.mid")
 d = processor.encode(song)
 
 model = HEventModel()
-model.load_state_dict(torch.load("models/hlstm_epoch_4.pt", map_location="mps"))
+model.load_state_dict(torch.load("models/hlstm_epoch_3.pt", map_location="mps"))
 
 generator = MusicGenerator(model, processor, device="mps")
 
 # Example prompt
 prompt_tokens = d['note_level']
-print(f"Initial prompt tokens {prompt_tokens}")
+# print(f"Initial prompt tokens {prompt_tokens}")
 
 # Randomly assigning instruments
 
 LIST_OF_INSTRUMENTS = list(d['instr_level'])
+print(LIST_OF_INSTRUMENTS)
 
 possible_numbers = np.array(LIST_OF_INSTRUMENTS)
 
@@ -37,13 +38,13 @@ random_choices = np.random.choice(possible_numbers, size=prompt_tokens.shape[0])
 # # data_array[:, 3] selects ALL rows (:) and the 4th column (3)
 # print(prompt_tokens.shape)
 # print(prompt_tokens[:, 3])
-prompt_tokens[:, 3] = random_choices
+# prompt_tokens[:, 3] = random_choices
 
 midi, tokens = generator.generate(prompt_tokens, style=0, num_steps=300, include_initial=False,
-                                  base_instr=45, instr_range=4,
-                                  temperature=0.9,
+                                  instruments_lst=[0,3],
+                                  temperature=0.5,
                                   top_k=50)
-muspy.write_midi("data/gen/generated_song_pirates.mid", midi)
+muspy.write_midi("data/gen/generated_song_interst.mid", midi)
 print("✅ MIDI saved as generated_song.mid")
 
 # TODO, INCREASE THE DURATION SUM, INTRODUCE DELAY AND ADVANCE THE GENERATION, IT CREATES PANNING EFFECTS

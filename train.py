@@ -11,34 +11,53 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 # -----------------------
-# Dataset for 4-feature
+# Dataset for hierarchical 4-feature input
 # -----------------------
 class MusicDataset(Dataset):
     def __init__(self, token_path, seq_len=128):
         with open(token_path, "rb") as f:
             data_list = pickle.load(f)
 
-        self.events = []
-        self.styles = []
+        self.note_events = []
+        self.style_levels = []
+        self.instr_levels = []
+        self.control_levels = []
+
         for song in data_list:
             note_seq = np.array(song["note_level"], dtype=np.int64)
+            instr_seq = np.array(song.get("instr_level", [0]), dtype=np.int64)
+            control_seq = np.array(song.get("control_level", [0]), dtype=np.int64)
             song_seq = song.get("song_level", [0])
-            self.events.extend(note_seq)
-            self.styles.extend([song_seq[0]] * len(note_seq))
+
+            self.note_events.extend(note_seq)
+            self.instr_levels.extend([instr_seq[0]] * len(note_seq))
+            if len(control_seq) > 0:
+                self.control_levels.extend([control_seq[0]] * len(note_seq))
+            self.style_levels.extend([song_seq[4]] * len(note_seq))
 
         self.seq_len = seq_len
 
     def __len__(self):
-        return len(self.events) - self.seq_len
+        return len(self.note_events) - self.seq_len
 
     def __getitem__(self, idx):
-        x = np.array(self.events[idx:idx + self.seq_len])
-        y = np.array(self.events[idx + 1:idx + self.seq_len + 1])
-        style = self.styles[idx]
+        x = np.array(self.note_events[idx:idx + self.seq_len])
+        y = np.array(self.note_events[idx + 1:idx + self.seq_len + 1])
+
+        style = self.style_levels[idx]
+        instr = self.instr_levels[idx]
+        if len(self.control_levels) > 0:
+            control = self.control_levels[idx]
+            control_level = torch.tensor(control, dtype=torch.float32)
+        else:
+            control_level = torch.zeros((1, x.shape[0]), dtype=torch.float32)
+
         return (
             torch.tensor(x, dtype=torch.long),
             torch.tensor(y, dtype=torch.long),
-            torch.tensor(style, dtype=torch.long)
+            torch.tensor(style, dtype=torch.long),
+            torch.tensor(instr, dtype=torch.long),
+            control_level,
         )
 
 
@@ -53,8 +72,18 @@ def calculate_metrics(loss):
 # -----------------------
 # Training loop
 # -----------------------
-def train_model(token_path, output_dir="models", log_dir="runs/hlstm", seq_len=128,
-                batch_size=32, num_epochs=30, lr=1e-3, val_split=0.2, resume_checkpoint=None):
+def train_model(
+        token_path,
+        output_dir="models",
+        log_dir="runs/hlstm",
+        seq_len=128,
+        batch_size=32,
+        num_epochs=30,
+        lr=1e-3,
+        val_split=0.2,
+        resume_checkpoint=None,
+        patience=3
+):
     os.makedirs(output_dir, exist_ok=True)
     writer = SummaryWriter(log_dir)
 
@@ -83,27 +112,37 @@ def train_model(token_path, output_dir="models", log_dir="runs/hlstm", seq_len=1
 
     trainer = HLSTMTrainer(model, lr=lr, device="mps")
 
-    # Resume
+    # Resume checkpoint if provided
     start_epoch = 1
     if resume_checkpoint and os.path.exists(resume_checkpoint):
         trainer.load(resume_checkpoint)
         start_epoch = int(resume_checkpoint.split("_")[-1].split(".")[0]) + 1
 
-    # Training
+    # ---- Early Stopping Variables ----
+    best_val_loss = float("inf")
+    epochs_no_improve = 0
+
+    # ---- Training ----
     for epoch in range(start_epoch, num_epochs + 1):
         train_loss = 0.0
         val_loss = 0.0
 
-        for x, y, style in tqdm(train_loader, desc=f"[Epoch {epoch}] Training"):
-            # print(f"X is {x} and Y is {y}")
-            loss = trainer.train_step(x, y, style)
+        # -------------------
+        # Training Loop
+        # -------------------
+        for x, y, style, instruments, control_values in tqdm(train_loader, desc=f"[Epoch {epoch}] Training"):
+            loss = trainer.train_step(x, y, style=style, instr_context=instruments, control_context=control_values)
             train_loss += loss
 
         avg_train_loss = train_loss / len(train_loader)
         train_metrics = calculate_metrics(avg_train_loss)
 
-        for x, y, style in tqdm(val_loader, desc=f"[Epoch {epoch}] Validation"):
-            val_loss += trainer.eval_step(x, y, style)
+        # -------------------
+        # Validation Loop
+        # -------------------
+        for x, y, style, instruments, control_values in tqdm(val_loader, desc=f"[Epoch {epoch}] Validation"):
+            val_loss += trainer.eval_step(x, y, style=style, instr_context=instruments, control_context=control_values)
+
         avg_val_loss = val_loss / len(val_loader)
         val_metrics = calculate_metrics(avg_val_loss)
 
@@ -115,13 +154,28 @@ def train_model(token_path, output_dir="models", log_dir="runs/hlstm", seq_len=1
         writer.add_scalar("Perplexity/Train", train_metrics["perplexity"], epoch)
         writer.add_scalar("Perplexity/Validation", val_metrics["perplexity"], epoch)
 
-        ckpt_path = os.path.join(output_dir, f"hlstm_epoch_{epoch}.pt")
-        trainer.save(ckpt_path)
-        print(f"✅ Checkpoint saved: {ckpt_path}")
+        # -------------------
+        # Checkpoint & Early Stopping
+        # -------------------
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            ckpt_path = os.path.join(output_dir, f"hlstm_epoch_{epoch}.pt")
+            trainer.save(ckpt_path)
+            print(f"✅ Validation improved. Checkpoint saved: {ckpt_path}")
+        else:
+            epochs_no_improve += 1
+            print(f"⚠️ No improvement for {epochs_no_improve} epoch(s).")
+
+            if epochs_no_improve >= patience:
+                print(f"⏹️ Early stopping triggered after {patience} epochs of no improvement.")
+                break
 
     writer.close()
     print("🎵 Training complete!")
 
 
 if __name__ == "__main__":
-    train_model("data/encoded/encoded_tokens.pkl")
+    train_model(
+        "data/encoded/encoded_tokens_control_instrument_context.pkl"
+    )

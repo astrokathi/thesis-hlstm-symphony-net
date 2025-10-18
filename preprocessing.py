@@ -15,9 +15,9 @@ random.seed(42)
 np.random.seed(42)
 
 DATA_DIR = "/Users/kathi.s/ML_Projects/thesis/data/SymphonyNet"
-ENCODED_PATH = "data/encoded/encoded_tokens.pkl"
+ENCODED_PATH = "data/encoded/encoded_tokens_control_instrument_context.pkl"
 LIST_SUB_DIRECTORIES = ["classical", "contemporary"]
-MIN_FILES_PER_CLASS = 50
+MIN_FILES_PER_CLASS = 3
 
 processor = HEventProcessor()
 encoded_dataset = []
@@ -74,11 +74,13 @@ def preprocess_dataset():
                     continue
                 song_path = os.path.join(DATA_DIR, subdir, file)
                 try:
-                    song = muspy.read_midi(song_path)
-                    encoded = processor.encode(song)
-                    encoded_dataset.append(encoded)
                     # Assign a style ID based on folder
                     style_id = 0 if subdir == "classical" else 1
+                    song = muspy.read_midi(song_path)
+                    # setting muspy attribute for the style
+                    song.__setattr__("style_id", style_id)
+                    encoded = processor.encode(song)
+                    encoded_dataset.append(encoded)
                     # Collect stats
                     stats["song_name"].append(file)
                     stats["num_instruments"].append(len(encoded["instr_level"]))
