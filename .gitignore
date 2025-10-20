@@ -7,3 +7,5 @@ runs_initial/
 __pycache__
 runs
 runs_50
+runs*
+*.pkl

@@ -3,6 +3,7 @@ import muspy
 from h_event_processor import HEventProcessor
 from model import HEventModel
 from generator import MusicGenerator
+from generator_v2 import MusicGeneratorV2
 import torch
 import numpy as np
 
@@ -12,39 +13,48 @@ np.random.seed(42)
 processor = HEventProcessor()
 
 song = muspy.read_midi("test/interstellar.mid")
-d = processor.encode(song)
+d = processor.encode(song, 1)
 
 model = HEventModel()
-model.load_state_dict(torch.load("models/hlstm_epoch_3.pt", map_location="mps"))
+model.load_state_dict(torch.load("models/hlstm_epoch_4.pt", map_location="mps"))
 
 generator = MusicGenerator(model, processor, device="mps")
 
+gen_v2 = MusicGeneratorV2(model, processor, device="mps")
+
 # Example prompt
 prompt_tokens = d['note_level']
-# print(f"Initial prompt tokens {prompt_tokens}")
+print(list(set(prompt_tokens[:, 3])))
 
-# Randomly assigning instruments
-
-LIST_OF_INSTRUMENTS = list(d['instr_level'])
+LIST_OF_INSTRUMENTS = [96, 99, 103]
 print(LIST_OF_INSTRUMENTS)
 
-possible_numbers = np.array(LIST_OF_INSTRUMENTS)
+# midi, tokens = generator.generate_force_polyphonic(prompt_tokens, style=0, num_steps=100,
+#                                                    allowed_instruments=LIST_OF_INSTRUMENTS,
+#                                                    temperature=0.7, notes_per_chord=4, include_initial=False, seq_len=256)
+# print(tokens)
 
-# Randomly choose 4 numbers (one for each row) from the list
-# The 'size=4' ensures we get a list of 4 choices
-random_choices = np.random.choice(possible_numbers, size=prompt_tokens.shape[0])
+# midi, tokens = generator.generate_natural(prompt_tokens, style=0, num_steps=1000,
+#                                           allowed_instruments=LIST_OF_INSTRUMENTS,
+#                                           temperature=1.5, seq_len=len(prompt_tokens), include_initial=False)
+# print(tokens)
 
-# # Assign these 4 random choices to the 4th column (index 3)
-# # data_array[:, 3] selects ALL rows (:) and the 4th column (3)
-# print(prompt_tokens.shape)
-# print(prompt_tokens[:, 3])
-# prompt_tokens[:, 3] = random_choices
+expressive_controls = np.array([0.8, 0.7, 0.9, 0.3])  # [modulation, volume, expression, sustain]
+midi, tokens = generator.generate_with_preset(
+    preset_name="dreamy",
+    num_steps=100,
+    prompt_tokens=prompt_tokens,
+    style=0,
+    control_context=expressive_controls,
+    allowed_instruments=LIST_OF_INSTRUMENTS,
+    notes_per_chord=3,
+    temperature=0.5,
+    include_initial=False,
+    top_k=10,
+    top_p=0.9
+)
 
-midi, tokens = generator.generate(prompt_tokens, style=0, num_steps=300, include_initial=False,
-                                  instruments_lst=[0,3],
-                                  temperature=0.5,
-                                  top_k=50)
-muspy.write_midi("data/gen/generated_song_interst.mid", midi)
+muspy.write_midi("data/gen/interstellar_trio2_dreamy.mid", midi)
 print("✅ MIDI saved as generated_song.mid")
 
 # TODO, INCREASE THE DURATION SUM, INTRODUCE DELAY AND ADVANCE THE GENERATION, IT CREATES PANNING EFFECTS

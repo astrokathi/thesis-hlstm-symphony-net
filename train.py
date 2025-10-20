@@ -14,7 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 # Dataset for hierarchical 4-feature input
 # -----------------------
 class MusicDataset(Dataset):
-    def __init__(self, token_path, seq_len=128):
+    def __init__(self, token_path, seq_len=128, use_control_context=True, control_dim=128):
         with open(token_path, "rb") as f:
             data_list = pickle.load(f)
 
@@ -22,42 +22,93 @@ class MusicDataset(Dataset):
         self.style_levels = []
         self.instr_levels = []
         self.control_levels = []
+        self.use_control_context = use_control_context
+        self.control_dim = control_dim
+        self.seq_len = seq_len
 
         for song in data_list:
             note_seq = np.array(song["note_level"], dtype=np.int64)
-            instr_seq = np.array(song.get("instr_level", [0]), dtype=np.int64)
-            control_seq = np.array(song.get("control_level", [0]), dtype=np.int64)
-            song_seq = song.get("song_level", [0])
+            control_seq = song.get("control_level", np.zeros((0, 4), dtype=np.int64))
+            song_seq = song.get("song_level", [120, 4, 1, 100, 0])
 
-            self.note_events.extend(note_seq)
-            self.instr_levels.extend([instr_seq[0]] * len(note_seq))
-            if len(control_seq) > 0:
-                self.control_levels.extend([control_seq[0]] * len(note_seq))
-            self.style_levels.extend([song_seq[4]] * len(note_seq))
+            # Process control changes - now returns features for entire sequence
+            control_features = self._extract_control_features(control_seq, len(note_seq))
 
-        self.seq_len = seq_len
+            for i in range(len(note_seq) - seq_len):
+                self.note_events.append(note_seq[i:i + seq_len])
+                self.style_levels.append(song_seq[4])
+                self.instr_levels.append(song_seq[2])
+
+                if self.use_control_context and len(control_features) > 0:
+                    # Get control features for this sequence window
+                    start_idx = i
+                    end_idx = i + seq_len
+                    control_window = control_features[start_idx:end_idx]
+
+                    # If we don't have enough control features, pad with zeros
+                    if len(control_window) < seq_len:
+                        padding = np.zeros((seq_len - len(control_window), self.control_dim), dtype=np.float32)
+                        control_window = np.concatenate([control_window, padding])
+
+                    self.control_levels.append(control_window)
+                else:
+                    # Create zero tensor with shape (seq_len, control_dim)
+                    self.control_levels.append(np.zeros((seq_len, self.control_dim), dtype=np.float32))
+
+    def _extract_control_features(self, control_seq, num_notes):
+        """Extract control features per note with dimension control_dim"""
+        if len(control_seq) == 0:
+            return np.zeros((num_notes, self.control_dim), dtype=np.float32)
+
+        control_features = []
+
+        # Define control codes we want to track
+        # You can expand this list based on what's in your data
+        control_codes = [1, 7, 11, 64, 71, 74]  # modulation, volume, expression, sustain, resonance, brightness
+
+        for i in range(num_notes):
+            control_feat = np.zeros(self.control_dim, dtype=np.float32)
+
+            # Fill in the first few dimensions with actual control values
+            for j, cc_code in enumerate(control_codes):
+                if j >= self.control_dim:
+                    break  # Don't exceed our feature dimension
+
+                cc_events = control_seq[control_seq[:, 2] == cc_code]
+                if len(cc_events) > 0:
+                    # Use the most recent value
+                    control_feat[j] = cc_events[-1, 3] / 127.0  # normalize
+                else:
+                    # Set reasonable defaults
+                    if cc_code == 7:  # volume
+                        control_feat[j] = 0.8
+                    elif cc_code == 11:  # expression
+                        control_feat[j] = 0.7
+                    else:
+                        control_feat[j] = 0.0
+
+            # Remaining dimensions can be used for other features or left as zero
+            control_features.append(control_feat)
+
+        return np.array(control_features)
 
     def __len__(self):
-        return len(self.note_events) - self.seq_len
+        return len(self.note_events)
 
     def __getitem__(self, idx):
-        x = np.array(self.note_events[idx:idx + self.seq_len])
-        y = np.array(self.note_events[idx + 1:idx + self.seq_len + 1])
+        x = self.note_events[idx]  # shape: (seq_len, 4)
+        y = np.concatenate([self.note_events[idx][1:], self.note_events[idx][-1:]])
 
         style = self.style_levels[idx]
-        instr = self.instr_levels[idx]
-        if len(self.control_levels) > 0:
-            control = self.control_levels[idx]
-            control_level = torch.tensor(control, dtype=torch.float32)
-        else:
-            control_level = torch.zeros((1, x.shape[0]), dtype=torch.float32)
+        instr_context = np.array([self.instr_levels[idx]], dtype=np.int64)
+        control_context = self.control_levels[idx]  # shape: (seq_len, control_dim)
 
         return (
             torch.tensor(x, dtype=torch.long),
             torch.tensor(y, dtype=torch.long),
             torch.tensor(style, dtype=torch.long),
-            torch.tensor(instr, dtype=torch.long),
-            control_level,
+            torch.tensor(instr_context, dtype=torch.long),
+            torch.tensor(control_context, dtype=torch.float)
         )
 
 
@@ -87,7 +138,7 @@ def train_model(
     os.makedirs(output_dir, exist_ok=True)
     writer = SummaryWriter(log_dir)
 
-    dataset = MusicDataset(token_path, seq_len)
+    dataset = MusicDataset(token_path, seq_len, use_control_context=True)
     val_size = int(len(dataset) * val_split)
     train_size = len(dataset) - val_size
     train_ds, val_ds = random_split(dataset, [train_size, val_size])
@@ -130,8 +181,8 @@ def train_model(
         # -------------------
         # Training Loop
         # -------------------
-        for x, y, style, instruments, control_values in tqdm(train_loader, desc=f"[Epoch {epoch}] Training"):
-            loss = trainer.train_step(x, y, style=style, instr_context=instruments, control_context=control_values)
+        for x, y, style, instruments, controls  in tqdm(train_loader, desc=f"[Epoch {epoch}] Training"):
+            loss = trainer.train_step(x, y, style=style, instr_context=instruments, control_context=controls)
             train_loss += loss
 
         avg_train_loss = train_loss / len(train_loader)
@@ -140,8 +191,8 @@ def train_model(
         # -------------------
         # Validation Loop
         # -------------------
-        for x, y, style, instruments, control_values in tqdm(val_loader, desc=f"[Epoch {epoch}] Validation"):
-            val_loss += trainer.eval_step(x, y, style=style, instr_context=instruments, control_context=control_values)
+        for x, y, style, instruments, controls in tqdm(val_loader, desc=f"[Epoch {epoch}] Validation"):
+            val_loss += trainer.eval_step(x, y, style=style, instr_context=instruments, control_context=controls)
 
         avg_val_loss = val_loss / len(val_loader)
         val_metrics = calculate_metrics(avg_val_loss)
@@ -177,5 +228,5 @@ def train_model(
 
 if __name__ == "__main__":
     train_model(
-        "data/encoded/encoded_tokens_control_instrument_context.pkl"
+        "data/encoded/encoded_tokens_25_new.pkl"
     )

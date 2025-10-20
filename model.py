@@ -22,118 +22,133 @@ class HEventModel(nn.Module):
                  device='mps'):
         super(HEventModel, self).__init__()
 
+        self.hidden_dim = hidden_dim
+        self.embed_dim = embed_dim
+
         # Separate embeddings for each feature
         self.pitch_embed = nn.Embedding(num_pitches, embed_dim, device=device)
         self.duration_embed = nn.Embedding(num_durations, embed_dim, device=device)
         self.velocity_embed = nn.Embedding(num_velocities, embed_dim, device=device)
         self.instrument_embed = nn.Embedding(num_instruments, embed_dim, device=device)
         self.style_embed = nn.Embedding(style_classes, embed_dim, device=device)
-        self.control_embed = nn.Linear(control_dim, embed_dim, device=device)
 
-        self.use_instrument_conditioning = True
-        self.use_style_conditioning = True
+        # Projection layers to match dimensions
+        self.embed_proj = nn.Linear(embed_dim, hidden_dim, device=device)  # Project embeddings to hidden_dim
+        self.style_proj = nn.Linear(embed_dim, hidden_dim, device=device)
+        self.instr_proj = nn.Linear(embed_dim, hidden_dim, device=device)
+        self.control_proj = nn.Linear(control_dim, hidden_dim, device=device)
 
         # 3-layer hierarchical LSTM
-        self.lstm1 = nn.LSTM(embed_dim, hidden_dim, batch_first=True, device=device)
+        self.lstm1 = nn.LSTM(hidden_dim, hidden_dim, batch_first=True, device=device)  # Changed input to hidden_dim
         self.lstm2 = nn.LSTM(hidden_dim, hidden_dim, batch_first=True, device=device)
         self.lstm3 = nn.LSTM(hidden_dim, hidden_dim, batch_first=True, device=device)
 
         self.dropout = nn.Dropout(dropout)
-        self.pitch_head = nn.Linear(hidden_dim, self.pitch_embed.num_embeddings, device=device)
-        self.dur_head = nn.Linear(hidden_dim, self.duration_embed.num_embeddings, device=device)
-        self.vel_head = nn.Linear(hidden_dim, self.velocity_embed.num_embeddings, device=device)
-        self.instr_head = nn.Linear(hidden_dim, self.instrument_embed.num_embeddings, device=device)
+
+        # Output layers
+        self.pitch_out = nn.Linear(hidden_dim, num_pitches, device=device)
+        self.duration_out = nn.Linear(hidden_dim, num_durations, device=device)
+        self.velocity_out = nn.Linear(hidden_dim, num_velocities, device=device)
+        self.instrument_out = nn.Linear(hidden_dim, num_instruments, device=device)
+
         self.max_bins = num_durations
 
+        self.use_style_conditioning = True
+        self.use_instrument_conditioning = True
+        self.use_control_conditioning = True
+
+        self.control_dim = control_dim
+
     def forward(self, x, style=None, instr_context=None, control_context=None, hidden_states=None):
-        """
-        x: (batch, seq_len, 4)
-        style: (batch,) optional
-        instr_context: list or tensor of instrument IDs per song
-        """
-        if x.dim() == 2:
-            x = x.unsqueeze(0)
         batch_size, seq_len, _ = x.size()
+        device = x.device
 
-        pitch_ids = x[:, :, 0]
-        dur_ids = x[:, :, 1]
-        vel_ids = x[:, :, 2]
-        instr_ids = x[:, :, 3]
+        # --- Extract input components ---
+        pitch = x[:, :, 0].long()
+        duration = x[:, :, 1].long()
+        velocity = x[:, :, 2].long()
+        instrument = x[:, :, 3].long()
 
-        # Token embeddings
-        pitch_emb = self.pitch_embed(pitch_ids)
-        dur_emb = self.duration_embed(dur_ids)
-        vel_emb = self.velocity_embed(vel_ids)
-        instr_emb = self.instrument_embed(instr_ids)
-        control_emb = self.control_embed(control_context)
+        # --- Base embeddings ---
+        x_embed = (
+                self.pitch_embed(pitch) +
+                self.duration_embed(duration) +
+                self.velocity_embed(velocity) +
+                self.instrument_embed(instrument)
+        )
+        x_embed = self.embed_proj(x_embed)
 
-        x_embed = pitch_emb + dur_emb + vel_emb
-        if self.use_instrument_conditioning:
-            x_embed += instr_emb
+        # --- Prepare conditioning contexts ---
+        style_emb = None
+        instr_emb = None
+        control_emb = None
 
-        # 🔸 Instrument-level context conditioning
-        if instr_context is not None:
-            # Convert list to tensor
-            if isinstance(instr_context, list):
-                instr_context = torch.tensor(instr_context, dtype=torch.long, device=x.device)
-
-            # Ensure shape is [batch_size, num_instrs]
-            if instr_context.dim() == 1:
-                instr_context = instr_context.unsqueeze(1)  # [batch_size, 1]
-
-            # Compute mean embedding across instruments
-            instr_ctx_emb = self.instrument_embed(instr_context).mean(dim=1, keepdim=True)  # [batch_size, 1, embed_dim]
-
-            # Expand along sequence dimension
-            instr_ctx_emb = instr_ctx_emb.expand(batch_size, seq_len, -1)  # [batch_size, seq_len, embed_dim]
-            x_embed += instr_ctx_emb
-
-        # 🔸 Style conditioning
-        if self.use_style_conditioning and style is not None:
+        # STYLE conditioning (global, high-level) - LSTM1
+        if style is not None and self.use_style_conditioning:
+            style = style.long()
             if style.dim() == 1:
-                style_emb = self.style_embed(style).unsqueeze(1).expand(-1, seq_len, -1)
-            else:
-                style_emb = self.style_embed(style)
-            x_embed += style_emb
+                style = style.unsqueeze(1).expand(-1, seq_len)
+            style_emb = self.style_embed(style)
+            style_emb = self.style_proj(style_emb)
 
-        # 🔸 Control-level context conditioning
-        if control_context is not None:
-            # control_context: [batch, seq_len, control_dim] or [batch, control_dim]
+        # INSTRUMENT conditioning (mid-level) - LSTM2
+        if instr_context is not None and self.use_instrument_conditioning:
+            instr_context = instr_context.long()
+            if instr_context.dim() == 1:
+                instr_context = instr_context.unsqueeze(0)
+            instr_emb = self.instrument_embed(instr_context).mean(dim=1, keepdim=True)
+            instr_emb = self.instr_proj(instr_emb)
+            instr_emb = instr_emb.expand(batch_size, seq_len, -1)
+
+        # CONTROL conditioning - handle the shape properly
+        if control_context is not None and self.use_control_conditioning:
+            # control_context shape: (batch_size, seq_len, control_dim)
             if control_context.dim() == 2:
-                # Expand to sequence length if only one vector per batch
-                control_context = control_context.unsqueeze(1).expand(-1, seq_len, -1)  # [batch, seq_len, control_dim]
-            # Project control features to embedding dimension
-            control_context = control_context.float()
-            control_emb = self.control_embed(control_context)  # [batch, seq_len, embed_dim]
+                # If it's (batch_size, control_dim), expand to sequence
+                control_context = control_context.unsqueeze(1).expand(-1, seq_len, -1)
+            elif control_context.dim() == 3 and control_context.size(1) == 1:
+                # If it's (batch_size, 1, control_dim), expand to sequence length
+                control_context = control_context.expand(-1, seq_len, -1)
 
-            # Add to x_embed (or concatenate if you want)
-        x_embed = x_embed + control_emb
+            # Project control context to hidden dimension
+            control_emb = self.control_proj(control_context.float())
 
-        # Forward through hierarchical LSTMs
-        out1, h1 = self.lstm1(x_embed, None if hidden_states is None else hidden_states[0])
-        out2, h2 = self.lstm2(out1, None if hidden_states is None else hidden_states[1])
-        out3, h3 = self.lstm3(out2, None if hidden_states is None else hidden_states[2])
+        # --- Hierarchical LSTM flow ---
+        # LSTM1 → STYLE conditioning (global characteristics)
+        lstm1_in = x_embed
+        if style_emb is not None:
+            lstm1_in = lstm1_in + style_emb
+        out1, h1 = self.lstm1(lstm1_in, None if hidden_states is None else hidden_states[0])
+
+        # LSTM2 → INSTRUMENT conditioning (instrument-specific patterns)
+        lstm2_in = out1
+        if instr_emb is not None:
+            lstm2_in = lstm2_in + instr_emb
+        out2, h2 = self.lstm2(lstm2_in, None if hidden_states is None else hidden_states[1])
+
+        # LSTM3 → CONTROL conditioning (expression, dynamics)
+        lstm3_in = out2
+        if control_emb is not None:
+            lstm3_in = lstm3_in + control_emb
+        out3, h3 = self.lstm3(lstm3_in, None if hidden_states is None else hidden_states[2])
+
         out3 = self.dropout(out3)
 
-        pitch_logits = self.pitch_head(out3)
-        dur_logits = self.dur_head(out3)
-        vel_logits = self.vel_head(out3)
-        instr_logits = self.instr_head(out3)
+        # --- Output projections ---
+        pitch_logits = self.pitch_out(out3)
+        dur_logits = self.duration_out(out3)
+        vel_logits = self.velocity_out(out3)
+        instr_logits = self.instrument_out(out3)
 
         return pitch_logits, dur_logits, vel_logits, instr_logits, (h1, h2, h3)
 
 
 class HLSTMTrainer:
-    """
-    Trainer for HEventModel (multi-feature input)
-    Handles training, evaluation, loss computation.
-    """
-
     def __init__(self, model, lr=1e-3, device=None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-        self.criterion = nn.CrossEntropyLoss()  # only for pitch prediction for now
+        self.criterion = nn.CrossEntropyLoss()
 
     def train_step(self, x, y, style=None, instr_context=None, control_context=None):
         self.model.train()
@@ -145,10 +160,10 @@ class HLSTMTrainer:
         if control_context is not None:
             control_context = control_context.to(self.device)
 
-        y_pitch = y[:, :, 0]
-        y_dur = y[:, :, 1]
-        y_vel = y[:, :, 2]
-        y_instr = y[:, :, 3]
+        y_pitch = y[:, :, 0].long()
+        y_dur = y[:, :, 1].long()
+        y_vel = y[:, :, 2].long()
+        y_instr = y[:, :, 3].long()
 
         self.optimizer.zero_grad()
         pitch_logits, dur_logits, vel_logits, instr_logits, _ = self.model(
@@ -166,30 +181,30 @@ class HLSTMTrainer:
         return loss.item()
 
     def eval_step(self, x, y, style=None, instr_context=None, control_context=None):
-        self.model.train()
-        x, y = x.to(self.device), y.to(self.device)
-        if style is not None:
-            style = style.to(self.device)
-        if instr_context is not None:
-            instr_context = instr_context.to(self.device)
-        if control_context is not None:
-            control_context = control_context.to(self.device)
+        self.model.eval()
+        with torch.no_grad():
+            x, y = x.to(self.device), y.to(self.device)
+            if style is not None:
+                style = style.to(self.device)
+            if instr_context is not None:
+                instr_context = instr_context.to(self.device)
+            if control_context is not None:
+                control_context = control_context.to(self.device)
 
-        y_pitch = y[:, :, 0]
-        y_dur = y[:, :, 1]
-        y_vel = y[:, :, 2]
-        y_instr = y[:, :, 3]
+            y_pitch = y[:, :, 0].long()
+            y_dur = y[:, :, 1].long()
+            y_vel = y[:, :, 2].long()
+            y_instr = y[:, :, 3].long()
 
-        self.optimizer.zero_grad()
-        pitch_logits, dur_logits, vel_logits, instr_logits, _ = self.model(
-            x, style=style, instr_context=instr_context, control_context=control_context
-        )
+            pitch_logits, dur_logits, vel_logits, instr_logits, _ = self.model(
+                x, style=style, instr_context=instr_context, control_context=control_context
+            )
 
-        pitch_loss = self.criterion(pitch_logits.view(-1, pitch_logits.size(-1)), y_pitch.reshape(-1))
-        dur_loss = self.criterion(dur_logits.view(-1, dur_logits.size(-1)), y_dur.reshape(-1))
-        vel_loss = self.criterion(vel_logits.view(-1, vel_logits.size(-1)), y_vel.reshape(-1))
-        instr_loss = self.criterion(instr_logits.view(-1, instr_logits.size(-1)), y_instr.reshape(-1))
-        loss = (pitch_loss + dur_loss + vel_loss + instr_loss) / 4
+            pitch_loss = self.criterion(pitch_logits.view(-1, pitch_logits.size(-1)), y_pitch.reshape(-1))
+            dur_loss = self.criterion(dur_logits.view(-1, dur_logits.size(-1)), y_dur.reshape(-1))
+            vel_loss = self.criterion(vel_logits.view(-1, vel_logits.size(-1)), y_vel.reshape(-1))
+            instr_loss = self.criterion(instr_logits.view(-1, instr_logits.size(-1)), y_instr.reshape(-1))
+            loss = (pitch_loss + dur_loss + vel_loss + instr_loss) / 4
 
         return loss.item()
 

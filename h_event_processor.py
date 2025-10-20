@@ -10,7 +10,7 @@ class HEventProcessor:
         self.num_duration_bins = num_duration_bins
         self.generate_expression = generate_expression
 
-    def encode(self, song: muspy.Music):
+    def encode(self, song: muspy.Music, style_id: 0):
         note_level, instr_level, song_level, control_level = [], [], [], []
 
         tempo = np.mean([int(t.qpm) for t in song.tempos]) if song.tempos else 120
@@ -19,7 +19,8 @@ class HEventProcessor:
             "tempo": tempo,
             "time_signature": time_sig,
             "num_tracks": len(song.tracks),
-            "length": song.get_end_time()
+            "length": song.get_end_time(),
+            "style": style_id
         })
 
         raw_durations = list()
@@ -64,8 +65,8 @@ class HEventProcessor:
             log_durs = np.zeros(len(note_level), dtype=int)
 
         encoded_notes = self._encode_note_tokens(note_level, log_durs)
-        encoded_instruments = encoded_notes[3]
-        encoded_song = np.array([tempo, time_sig, len(instr_level), self.max_time, 0])
+        encoded_instruments = encoded_notes[:, 3]
+        encoded_song = np.array([tempo, time_sig, len(instr_level), self.max_time, style_id])
 
         encoded_controls = np.array([
             (c["instrument_id"], c["time"], c["control_number"], c["value"])
@@ -144,49 +145,61 @@ class HEventProcessor:
         import numpy as np
 
         music = muspy.Music()
-        max_dur = max(encoded_dict["note_level"][:, 1]) if len(encoded_dict["note_level"]) > 0 else 1
-        max_log = np.log1p(max_dur)  # approximate max log from encoding
+        note_level = encoded_dict["note_level"]
 
-        # Group events by instrument
-        instr_groups = {}
-        for note in encoded_dict["note_level"]:
+        if len(note_level) == 0:
+            return music
+
+        # Calculate actual durations from quantized values
+        max_dur = max(note_level[:, 1]) if len(note_level) > 0 else 1
+        max_log = np.log1p(max_dur)
+
+        # Group by instrument and create tracks
+        tracks = {}
+        current_time = 0
+
+        for i, note in enumerate(note_level):
             pitch, quantized_duration, velocity, instr_id = note
             duration = int(np.expm1(quantized_duration / 127 * max_log))
-            instr_groups.setdefault(instr_id, []).append((pitch, duration, velocity))
 
-        # Decode per instrument
-        for instr_id, notes in instr_groups.items():
-            program = self.reverse_instrument_map.get(instr_id, 0)
-            track = muspy.Track(program=program)
+            # Get or create track for this instrument
+            if instr_id not in tracks:
+                program = self.reverse_instrument_map.get(instr_id, 0)
+                tracks[instr_id] = {
+                    'track': muspy.Track(program=program),
+                    'last_end_time': 0
+                }
 
-            # Keep track of overlapping start times
-            time_cursor = 0
-            chord_buffer = []
-            for i, (pitch, duration, velocity) in enumerate(notes):
-                if i == 0:
-                    start = time_cursor
+            track_info = tracks[instr_id]
+
+            # Simple polyphonic timing: allow some overlap, but mostly sequential
+            if i == 0:
+                start_time = 0
+            else:
+                # 40% chance to create chord/overlap (use same start time as previous in this track)
+                if np.random.random() < 0.4 and i > 0:
+                    start_time = track_info['last_end_time'] - 2  # Small overlap
                 else:
-                    # Randomly decide whether to overlap (for chord) or sequence
-                    overlap = np.random.rand() < 0.2  # 20% chance to overlap
-                    if overlap:
-                        start = chord_buffer[-1][0]  # same start → chord
-                    else:
-                        start = time_cursor
+                    # Sequential placement with small gap
+                    start_time = track_info['last_end_time'] + np.random.randint(0, 4)
 
-                track.notes.append(
-                    muspy.Note(
-                        time=start,
-                        pitch=int(pitch),
-                        duration=int(duration),
-                        velocity=int(velocity),
-                    )
+            start_time = max(0, start_time)  # Ensure non-negative
+
+            track_info['track'].notes.append(
+                muspy.Note(
+                    time=int(start_time),
+                    pitch=int(pitch),
+                    duration=int(duration),
+                    velocity=int(velocity),
                 )
+            )
 
-                # Save time and buffer
-                chord_buffer.append((start, duration))
-                time_cursor = start + duration
+            # Update end time for this track
+            track_info['last_end_time'] = start_time + duration
 
-            music.tracks.append(track)
+        # Add all tracks to music
+        for track_info in tracks.values():
+            music.tracks.append(track_info['track'])
 
         return music
 
