@@ -133,7 +133,7 @@ def train_model(
         lr=1e-3,
         val_split=0.2,
         resume_checkpoint=None,
-        patience=3
+        patience=7
 ):
     os.makedirs(output_dir, exist_ok=True)
     writer = SummaryWriter(log_dir)
@@ -216,6 +216,8 @@ def train_model(
             print(f"✅ Validation improved. Checkpoint saved: {ckpt_path}")
         else:
             epochs_no_improve += 1
+            ckpt_path = os.path.join(output_dir, f"hlstm_epoch_{epoch}_not_improved.pt")
+            trainer.save(ckpt_path)
             print(f"⚠️ No improvement for {epochs_no_improve} epoch(s).")
 
             if epochs_no_improve >= patience:
@@ -228,5 +230,5 @@ def train_model(
 
 if __name__ == "__main__":
     train_model(
-        "data/encoded/encoded_tokens_25_new.pkl"
+        "data/encoded/encoded_tokens_25_new.pkl", resume_checkpoint="models/hlstm_epoch_6.pt"
     )
