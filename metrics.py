@@ -99,7 +99,7 @@ class MusicGenerationMetrics:
 
     def instrument_usage_ratio(self, music, target_instruments=None):
         """Instrument Usage Ratio for conditional fidelity (Layer 3 validation)"""
-        target_instruments = self.instruments_used
+        target_instruments = target_instruments
         if target_instruments is None:
             target_instruments = []
 
@@ -132,7 +132,6 @@ class MusicGenerationMetrics:
         """Cross-Entropy Perplexity-like score for style adherence"""
         # This would require a pre-trained style classifier
         # For now, use musical features as proxy
-        style_model = self.style
         features = []
 
         # Extract style-related features without muspy.note_density
@@ -192,6 +191,7 @@ class MusicGenerationMetrics:
         # Layer 1: Structural Coherence
         metrics['ssm_score'] = self.self_similarity_matrix_score(music)
 
+        # Layer 2: Rhythmic Consistency
         # Layer 2: Rhythmic Consistency
         metrics['ioi_variance'] = self.inter_onset_interval_variance(music)
 

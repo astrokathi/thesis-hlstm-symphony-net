@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+from torchinfo import summary
 
 
 class HEventModel(nn.Module):
@@ -213,3 +214,15 @@ class HLSTMTrainer:
 
     def load(self, path):
         self.model.load_state_dict(torch.load(path, map_location=self.device))
+
+
+if __name__ == "__main__":
+    model = HEventModel(device='cpu')
+
+    x = torch.randint(0, 128, (32, 128, 4))  # note-level data
+    style = torch.randint(0, 2, (32, 1))  # 2 style classes
+    instr_context = torch.randint(0, 128, (32, 128))  # instrument context
+    control_context = torch.randn(32, 128, 128)  # continuous control data
+
+    summary(model,
+            input_data=(x, style, instr_context, control_context), col_names=["input_size","output_size","num_params","params_percent","kernel_size", "mult_adds", "trainable"])

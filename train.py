@@ -181,7 +181,7 @@ def train_model(
         # -------------------
         # Training Loop
         # -------------------
-        for x, y, style, instruments, controls  in tqdm(train_loader, desc=f"[Epoch {epoch}] Training"):
+        for x, y, style, instruments, controls in tqdm(train_loader, desc=f"[Epoch {epoch}] Training"):
             loss = trainer.train_step(x, y, style=style, instr_context=instruments, control_context=controls)
             train_loss += loss
 

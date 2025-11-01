@@ -3,17 +3,21 @@ import matplotlib.patches as patches
 import numpy as np
 import os
 
+from generator import MusicGenerator
 from metrics import MusicGenerationMetrics
+import wav_composer as wc
 
 
 class MusicVisualizer:
-    def __init__(self, output_dir="generation_plots"):
+    def __init__(self, output_dir="assets/generation_plots", gen_method=1):
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(f"{output_dir}/{gen_method}", exist_ok=True)
+
 
     def plot_music_timeseries(self, music, title="Generated Music", filename="music_timeseries.png"):
         """Plot music as a piano roll timeseries"""
-        fig, ax = plt.subplots(figsize=(15, 8))
+        fig, ax = plt.subplots(figsize=(15, 10))
 
         colors = plt.cm.Set3(np.linspace(0, 1, len(music.tracks)))
 
@@ -53,7 +57,7 @@ class MusicVisualizer:
 
     def plot_velocity_timeseries(self, music, title="Velocity Over Time", filename="velocity_timeseries.png"):
         """Plot velocity as a timeseries"""
-        fig, ax = plt.subplots(figsize=(12, 6))
+        fig, ax = plt.subplots(figsize=(15, 10))
 
         for i, track in enumerate(music.tracks):
             if len(track.notes) == 0:
@@ -76,9 +80,10 @@ class MusicVisualizer:
 
 
 class MetricsPlotter:
-    def __init__(self, output_dir="metrics_plots"):
+    def __init__(self, output_dir="assets/metrics_plots", gen_method=1):
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(f"{output_dir}/{gen_method}", exist_ok=True)
 
     def plot_single_metrics(self, metrics, title="Generation Metrics", filename="single_metrics.png"):
         """Plot metrics for a single generation"""
@@ -152,7 +157,7 @@ class MetricsPlotter:
         all_metrics = sorted(all_metrics)
 
         # Create radar plot for comparison
-        fig, ax = plt.subplots(figsize=(12, 8), subplot_kw=dict(projection='polar'))
+        fig, ax = plt.subplots(figsize=(15, 10), subplot_kw=dict(projection='polar'))
 
         # Normalize metrics for radar plot
         normalized_metrics = []
@@ -228,55 +233,118 @@ class MetricsPlotter:
 
 class GeneratorMetrics:
 
-    def __init__(self, generator=None, preset_name=None, style=None, instruments_used=None, prompt_tokens=None,
-                 num_generations=3):
+    def __init__(self,
+                 generator: MusicGenerator = None,
+                 preset_name=None,
+                 style=None,
+                 instruments_used=None,
+                 prompt_tokens=None,
+                 num_generations=3,
+                 num_steps=100,
+                 control_context=[],
+                 notes_per_chord=2,
+                 temperature=0.7,
+                 include_initial=False,
+                 top_k=20,
+                 top_p=0.9,
+                 generation_method=0,
+                 seq_length=128
+                 ):
         self.preset_name = preset_name
         self.style = style
         self.instruments_used = instruments_used
         self.prompt_tokens = prompt_tokens
         self.num_generations = num_generations
         self.generator = generator
+        self.num_steps = num_steps
+        self.control_context = control_context
+        self.notes_per_chord = notes_per_chord
+        self.temperature = temperature
+        self.include_initial = include_initial
+        self.top_k = top_k
+        self.top_p = top_p
+        self.tokens = None
+        self.generation_method = generation_method
+        self.midi_music = None
+        self.seq_length = seq_length
 
-    def analyze_and_plot_generation(self, prompt_tokens, output_prefix="generation"):
+    def analyze_and_plot_generation(self, output_prefix="generation"):
         """Complete analysis and plotting for a generation"""
         # Initialize plotters
-        music_viz = MusicVisualizer()
-        metrics_plotter = MetricsPlotter()
+        music_viz = MusicVisualizer(gen_method=self.generation_method)
+        metrics_plotter = MetricsPlotter(gen_method=self.generation_method)
         metrics_calculator = MusicGenerationMetrics()
 
         # Generate music
-        print("Generating music...")
-        midi_music, tokens = midi_music, _ = self.generator.generate_with_preset(
-            preset_name=self.preset_name,
-            num_steps=100,
-            prompt_tokens=prompt_tokens,
-            style=self.style,
-            allowed_instruments=self.instruments_used,
-            notes_per_chord=3,
-            temperature=0.5,
-            include_initial=False,
-            top_k=10,
-            top_p=0.9
-        )
+        print(f"Generating music and metrics for the method {self.generation_method}")
+        if self.generation_method == 1:
+            self.midi_music, self.tokens = self.generator.method_1(
+                prompt_tokens=self.prompt_tokens,
+                style=self.style,
+                num_steps=self.num_steps,
+                temperature=self.temperature,
+                top_k=self.top_k,
+                include_initial=self.include_initial,
+                allowed_instruments=self.instruments_used
+            )
+        if self.generation_method == 2:
+            self.midi_music, self.tokens = self.generator.method_2(
+                prompt_tokens=self.prompt_tokens,
+                style=self.style,
+                num_steps=self.num_steps,
+                temperature=self.temperature,
+                top_k=self.top_k,
+                include_initial=self.include_initial,
+                allowed_instruments=self.instruments_used,
+                seq_len=self.seq_length
+            )
+        if self.generation_method == 3:
+            self.midi_music, self.tokens = self.generator.method_3(
+                prompt_tokens=self.prompt_tokens,
+                style=self.style,
+                num_steps=self.num_steps,
+                temperature=self.temperature,
+                top_k=self.top_k,
+                include_initial=self.include_initial,
+                allowed_instruments=self.instruments_used,
+                notes_per_chord=self.notes_per_chord,
+                top_p=self.top_p,
+                seq_len=self.seq_length
+            )
+        if self.generation_method == 4:
+            self.midi_music, self.tokens = self.generator.method_4(
+                preset_name=self.preset_name,
+                prompt_tokens=self.prompt_tokens,
+                style=self.style,
+                num_steps=self.num_steps,
+                temperature=self.temperature,
+                top_k=self.top_k,
+                include_initial=self.include_initial,
+                allowed_instruments=self.instruments_used,
+                notes_per_chord=self.notes_per_chord,
+                seq_len=self.seq_length,
+                top_p=self.top_p,
+                control_context=np.array(self.control_context)
+            )
 
         # Plot music timeseries
         print("Plotting music timeseries...")
         music_viz.plot_music_timeseries(
-            midi_music,
-            title=f"{output_prefix} - Piano Roll",
-            filename=f"{output_prefix}_piano_roll.png"
+            self.midi_music,
+            title=f"{self.generation_method}_{output_prefix} - Piano Roll",
+            filename=f"{self.generation_method}/{output_prefix}_piano_roll.png"
         )
 
         music_viz.plot_velocity_timeseries(
-            midi_music,
-            title=f"{output_prefix} - Velocity Distribution",
-            filename=f"{output_prefix}_velocity.png"
+            self.midi_music,
+            title=f"{self.generation_method}_{output_prefix} - Velocity Distribution",
+            filename=f"{self.generation_method}/{output_prefix}_velocity.png"
         )
 
         # Calculate metrics
         print("Calculating metrics...")
         metrics = metrics_calculator.compute_all_metrics(
-            midi_music,
+            self.midi_music,
             target_instruments=self.instruments_used
         )
 
@@ -284,8 +352,8 @@ class GeneratorMetrics:
         print("Plotting metrics...")
         metrics_plotter.plot_single_metrics(
             metrics,
-            title=f"{output_prefix} - Quality Metrics",
-            filename=f"{output_prefix}_metrics.png"
+            title=f"{self.generation_method}_{output_prefix} - Quality Metrics",
+            filename=f"{self.generation_method}/{output_prefix}_metrics.png"
         )
 
         # Print summary
@@ -295,7 +363,16 @@ class GeneratorMetrics:
         print(f"   Instrument Usage Ratio: {metrics.get('instrument_usage_ratio', 0):.3f}")
         print(f"   Style Adherence: {metrics.get('style_score', 0):.3f}")
 
-        return midi_music, tokens, metrics
+        print(f" Generating assets that can be rendered in the HTML")
+        os.makedirs(f"assets/mid/{self.generation_method}", exist_ok=True)
+        os.makedirs(f"assets/wav/{self.generation_method}", exist_ok=True)
+        wc.write_mid_and_wav(
+            music=self.midi_music,
+            mid_file_path=f"assets/mid/{self.generation_method}/{output_prefix}_song.mid",
+            wav_file_path=f"assets/wav/{self.generation_method}/{output_prefix}_song.wav"
+        )
+
+        return self.midi_music, self.tokens, metrics
 
     # Multiple generations comparison
     def compare_multiple_generations(self):
@@ -306,7 +383,7 @@ class GeneratorMetrics:
         for i in range(self.num_generations):
             print(f"\n🎵 Generating sample {i + 1}/{self.num_generations}")
             midi_music, tokens, metrics = self.analyze_and_plot_generation(
-                self.prompt_tokens, f"sample_{i + 1}"
+                f"sample_{i + 1}"
             )
             all_metrics.append(metrics)
             all_music.append(midi_music)
@@ -318,7 +395,7 @@ class GeneratorMetrics:
         metrics_plotter.plot_comparison_metrics(
             all_metrics, labels,
             title="Multiple Generations Comparison",
-            filename="generations_comparison.png"
+            filename=f"{self.generation_method}/generations_comparison.png"
         )
 
         return all_music, all_metrics

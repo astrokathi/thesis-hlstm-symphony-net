@@ -14,25 +14,24 @@ np.random.seed(42)
 # Load model & processor
 processor = HEventProcessor()
 
-song = muspy.read_midi("test/interstellar.mid")
-d = processor.encode(song, 1)
+song = muspy.read_midi("test/20centuryfox.mid")
+d = processor.encode(song, 2)
 
 model = HEventModel()
 model.load_state_dict(torch.load("models/hlstm_epoch_6.pt", map_location="mps"))
 
 generator = MusicGenerator(model, processor, device="mps")
 
-gen_v2 = MusicGeneratorV2(model, processor, device="mps")
-
 # Example prompt
 prompt_tokens = d['note_level']
 print(list(set(prompt_tokens[:, 3])))
 
-LIST_OF_INSTRUMENTS = [96, 99, 103]
+# LIST_OF_INSTRUMENTS = [56, 57, 58, 42, 60, 114]
+LIST_OF_INSTRUMENTS = [114, 115, 119]
 print(LIST_OF_INSTRUMENTS)
-PRESET = "dreamy"
+PRESET = "nothing"
 NUM_SAMPLES = 5
-STYLE = 0
+STYLE = 1
 
 # midi, tokens = generator.generate_force_polyphonic(prompt_tokens, style=0, num_steps=100,
 #                                                    allowed_instruments=LIST_OF_INSTRUMENTS,
@@ -45,56 +44,56 @@ STYLE = 0
 # print(tokens)
 
 # expressive_controls = np.array([0.8, 0.7, 0.9, 0.3])  # [modulation, volume, expression, sustain]
-# midi, tokens = generator.generate_with_preset(
-#     preset_name="dreamy",
-#     num_steps=100,
-#     prompt_tokens=prompt_tokens,
-#     style=0,
-#     control_context=expressive_controls,
-#     allowed_instruments=LIST_OF_INSTRUMENTS,
-#     notes_per_chord=3,
-#     temperature=0.5,
-#     include_initial=False,
-#     top_k=10,
-#     top_p=0.9
-# )
+midi, tokens = generator.generate_with_preset(
+    preset_name=PRESET,
+    num_steps=100,
+    prompt_tokens=prompt_tokens,
+    style=1,
+    control_context=[],
+    allowed_instruments=LIST_OF_INSTRUMENTS,
+    notes_per_chord=2,
+    temperature=0.7,
+    include_initial=True,
+    top_k=20,
+    top_p=0.9
+)
 #
-# muspy.write_midi("data/gen/interstellar_trio2_dreamy.mid", midi)
-print("✅ MIDI saved as generated_song.mid")
+muspy.write_midi("data/gen/20_FOX_DRUMS.mid", midi)
+# print("✅ MIDI saved as generated_song.mid")
 
 
-def validate_generation_quality(generator, num_samples=5, preset_name=PRESET):
-    """Validate generation quality across multiple samples"""
-    all_metrics = []
-    metrics_calculator = MusicGenerationMetrics(instruments_used=LIST_OF_INSTRUMENTS, style=STYLE)
-
-    for i in range(num_samples):
-        print(f"Computing metrics for the Sample {i}")
-        # Generate sample
-        midi_music, _ = generator.generate_with_preset(
-            preset_name=preset_name,
-            num_steps=100,
-            prompt_tokens=prompt_tokens,
-            style=STYLE,
-            allowed_instruments=LIST_OF_INSTRUMENTS,
-            notes_per_chord=3,
-            temperature=0.5,
-            include_initial=False,
-            top_k=10,
-            top_p=0.9
-        )
-
-        # Compute metrics
-        metrics = metrics_calculator.compute_all_metrics(midi_music)
-        print(f"Metrics for the sample {i} are {metrics}")
-        all_metrics.append(metrics)
-
-    # Average across samples
-    avg_metrics = {}
-    for key in all_metrics[0].keys():
-        avg_metrics[key] = np.mean([m[key] for m in all_metrics])
-
-    return avg_metrics, all_metrics
+# def validate_generation_quality(generator, num_samples=NUM_SAMPLES, preset_name=PRESET):
+#     """Validate generation quality across multiple samples"""
+#     all_metrics = []
+#     metrics_calculator = MusicGenerationMetrics(instruments_used=LIST_OF_INSTRUMENTS, style=STYLE)
+#
+#     for i in range(num_samples):
+#         print(f"Computing metrics for the Sample {i}")
+#         # Generate sample
+#         midi_music, _ = generator.generate_with_preset(
+#             preset_name=preset_name,
+#             num_steps=100,
+#             prompt_tokens=prompt_tokens,
+#             style=STYLE,
+#             allowed_instruments=LIST_OF_INSTRUMENTS,
+#             notes_per_chord=2,
+#             temperature=0.7,
+#             include_initial=False,
+#             top_k=2,
+#             top_p=0.9
+#         )
+#
+#         # Compute metrics
+#         metrics = metrics_calculator.compute_all_metrics(midi_music)
+#         print(f"Metrics for the sample {i} are {metrics}")
+#         all_metrics.append(metrics)
+#
+#     # Average across samples
+#     avg_metrics = {}
+#     for key in all_metrics[0].keys():
+#         avg_metrics[key] = np.mean([m[key] for m in all_metrics])
+#
+#     return avg_metrics, all_metrics
 
 
 def plot_metrics(gen):
@@ -104,7 +103,9 @@ def plot_metrics(gen):
         style=STYLE,
         instruments_used=LIST_OF_INSTRUMENTS,
         prompt_tokens=prompt_tokens,
-        num_generations=3
+        num_generations=3,
+        midi_music=midi,
+        tokens=tokens
     )
     gm.compare_multiple_generations()
 

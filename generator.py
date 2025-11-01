@@ -633,6 +633,7 @@ class MusicGenerator:
         "percussive": [0.1, 0.8, 0.6, 0.0],  # Short, punchy notes
         "dreamy": [0.9, 0.5, 0.8, 0.7],  # Lots of modulation, medium sustain
         "neutral": [0.0, 0.7, 0.7, 0.0],  # Default neutral values
+        "nothing": [0.0, 0.0, 0.0, 0.0]
     }
 
     def generate_with_preset(self, preset_name: str, **kwargs):
@@ -649,6 +650,18 @@ class MusicGenerator:
         return self.generate_with_control_conditioning(
             **kwargs
         )
+
+    def method_1(self, **kwargs):
+        return self.generate(**kwargs)
+
+    def method_2(self, **kwargs):
+        return self.generate_natural(**kwargs)
+
+    def method_3(self, **kwargs):
+        return self.generate_force_polyphonic(**kwargs)
+
+    def method_4(self, **kwargs):
+        return self.generate_with_preset(**kwargs)
 
     # Add this method to your MusicGenerator class
     def list_control_presets(self):
