@@ -1,0 +1,1 @@
+### Change the .txt to .pt to use the model for generation
