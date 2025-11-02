@@ -3,9 +3,9 @@
 *.mid
 *.idea
 *.DS_Store
-runs_initial/
+logs/runs_initial/
 __pycache__
-runs
-runs_50
+logs/runs
+logs/runs_50
 runs*
 *.pkl

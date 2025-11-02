@@ -18,7 +18,7 @@ song = muspy.read_midi("test/20centuryfox.mid")
 d = processor.encode(song, 2)
 
 model = HEventModel()
-model.load_state_dict(torch.load("models/hlstm_epoch_6.pt", map_location="mps"))
+model.load_state_dict(torch.load("models/hlstm_epoch_9.pt", map_location="mps"))
 
 generator = MusicGenerator(model, processor, device="mps")
 
@@ -27,11 +27,11 @@ prompt_tokens = d['note_level']
 print(list(set(prompt_tokens[:, 3])))
 
 # LIST_OF_INSTRUMENTS = [56, 57, 58, 42, 60, 114]
-LIST_OF_INSTRUMENTS = [114, 115, 119]
+LIST_OF_INSTRUMENTS = [40, 41, 42, 43]
 print(LIST_OF_INSTRUMENTS)
-PRESET = "nothing"
+PRESET = "sustained"
 NUM_SAMPLES = 5
-STYLE = 1
+STYLE = 0
 
 # midi, tokens = generator.generate_force_polyphonic(prompt_tokens, style=0, num_steps=100,
 #                                                    allowed_instruments=LIST_OF_INSTRUMENTS,
@@ -48,17 +48,17 @@ midi, tokens = generator.generate_with_preset(
     preset_name=PRESET,
     num_steps=100,
     prompt_tokens=prompt_tokens,
-    style=1,
+    style=STYLE,
     control_context=[],
     allowed_instruments=LIST_OF_INSTRUMENTS,
-    notes_per_chord=2,
+    notes_per_chord=3,
     temperature=0.7,
     include_initial=True,
-    top_k=20,
+    top_k=40,
     top_p=0.9
 )
 #
-muspy.write_midi("data/gen/20_FOX_DRUMS.mid", midi)
+muspy.write_midi("20_FOX_DRUMS.mid", midi)
 # print("✅ MIDI saved as generated_song.mid")
 
 
@@ -110,7 +110,7 @@ def plot_metrics(gen):
     gm.compare_multiple_generations()
 
 
-plot_metrics(generator)
+# plot_metrics(generator)
 # print(f"Now calculating metrics for {NUM_SAMPLES} samples")
 # avg_metrics, _ = validate_generation_quality(generator, num_samples=NUM_SAMPLES)
 # print(f"The average metrics among all the samples are {avg_metrics}")

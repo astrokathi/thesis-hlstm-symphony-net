@@ -83,7 +83,7 @@ def plot_metrics(gen):
             top_k=50,
             top_p=0.9,
             generation_method=i,
-            seq_length=64
+            seq_length=128
         )
         gm.compare_multiple_generations()
 

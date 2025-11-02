@@ -31,3 +31,7 @@ def write_mid_and_wav(
     wavfile.write(wav_file_path, SAMPLE_RATE, audio)
 
     print(f"Saved as {wav_file_path}")
+
+
+# write_mid_and_wav(muspy.read_midi("20_FOX_DRUMS.mid"), mid_file_path="20_FOX_DRUMS.mid", write_mid=False,
+#                   wav_file_path="assets/best_generation_classical.wav")
