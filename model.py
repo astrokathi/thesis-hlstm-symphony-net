@@ -148,7 +148,7 @@ class HLSTMTrainer:
     def __init__(self, model, lr=1e-3, device=None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
         self.criterion = nn.CrossEntropyLoss()
 
     def train_step(self, x, y, style=None, instr_context=None, control_context=None):

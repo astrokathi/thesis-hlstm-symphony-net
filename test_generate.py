@@ -14,7 +14,7 @@ np.random.seed(42)
 # Load model & processor
 processor = HEventProcessor()
 
-song = muspy.read_midi("test/20centuryfox.mid")
+song = muspy.read_midi("test/pirates.mid")
 d = processor.encode(song, 2)
 
 model = HEventModel()
@@ -27,15 +27,17 @@ prompt_tokens = d['note_level']
 print(list(set(prompt_tokens[:, 3])))
 
 # LIST_OF_INSTRUMENTS = [56, 57, 58, 42, 60, 114]
-LIST_OF_INSTRUMENTS = [40, 41, 42, 43]
+# LIST_OF_INSTRUMENTS = [114, 115]
+LIST_OF_INSTRUMENTS = [52, 53, 54]
 print(LIST_OF_INSTRUMENTS)
-PRESET = "sustained"
+PRESET = "neutral"
 NUM_SAMPLES = 5
 STYLE = 0
+FILE_NAME = "new_gen/mop_gen_mul_v5.mid"
 
 # midi, tokens = generator.generate_force_polyphonic(prompt_tokens, style=0, num_steps=100,
 #                                                    allowed_instruments=LIST_OF_INSTRUMENTS,
-#                                                    temperature=0.7, notes_per_chord=4, include_initial=False, seq_len=256)
+#                                                    temperature=0.7, notes_per_chord=4, include_initial=False, seq_len=256)`
 # print(tokens)
 
 # midi, tokens = generator.generate_natural(prompt_tokens, style=0, num_steps=1000,
@@ -51,14 +53,14 @@ midi, tokens = generator.generate_with_preset(
     style=STYLE,
     control_context=[],
     allowed_instruments=LIST_OF_INSTRUMENTS,
-    notes_per_chord=3,
+    notes_per_chord=2,
     temperature=0.7,
-    include_initial=True,
+    include_initial=False,
     top_k=40,
     top_p=0.9
 )
 #
-muspy.write_midi("20_FOX_DRUMS.mid", midi)
+muspy.write_midi(FILE_NAME, midi)
 # print("✅ MIDI saved as generated_song.mid")
 
 
