@@ -16,94 +16,94 @@ from torch.utils.tensorboard import SummaryWriter
 from config import Config
 
 class MusicDataset(Dataset):
-    def __init__(self, token_path=Config.TOKEN_PATH, seq_len=Config.SEQ_LEN, use_control_context=True, control_dim=Config.CONTROL_DIM):
+    """Sprint 2: On-the-fly sliding window dataset. Stores per-song arrays
+    instead of pre-materializing every window — O(n) memory vs O(n·seq_len)."""
+
+    def __init__(self, token_path=Config.TOKEN_PATH, seq_len=Config.SEQ_LEN,
+                 use_control_context=True, control_dim=Config.CONTROL_DIM):
         with open(token_path, "rb") as f:
             data_list = pickle.load(f)
 
-        self.note_events = []
-        self.style_levels = []
-        self.instr_levels = []
-        self.control_levels = []
         self.use_control_context = use_control_context
         self.control_dim = control_dim
         self.seq_len = seq_len
 
+        # Per-song storage: each entry is (note_seq, style, instr, control_features)
+        self.songs = []
+        self.cum_lengths = [0]  # prefix sum of (len(note_seq) - seq_len) per song
+
         for song in data_list:
             note_seq = np.array(song["note_level"], dtype=np.int64)
+            if len(note_seq) <= seq_len:
+                continue  # skip songs too short
+
             control_seq = song.get("control_level", np.zeros((0, 4), dtype=np.int64))
             song_seq = song.get("song_level", [120, 4, 1, 100, 0])
 
-            # Process control changes - now returns features for entire sequence
+            # Pre-compute control features once per song (not per window)
             control_features = self._extract_control_features(control_seq, len(note_seq))
 
-            for i in range(len(note_seq) - seq_len):
-                self.note_events.append(note_seq[i:i + seq_len])
-                self.style_levels.append(song_seq[4])
-                self.instr_levels.append(song_seq[2])
-
-                if self.use_control_context and len(control_features) > 0:
-                    # Get control features for this sequence window
-                    start_idx = i
-                    end_idx = i + seq_len
-                    control_window = control_features[start_idx:end_idx]
-
-                    # If we don't have enough control features, pad with zeros
-                    if len(control_window) < seq_len:
-                        padding = np.zeros((seq_len - len(control_window), self.control_dim), dtype=np.float32)
-                        control_window = np.concatenate([control_window, padding])
-
-                    self.control_levels.append(control_window)
-                else:
-                    # Create zero tensor with shape (seq_len, control_dim)
-                    self.control_levels.append(np.zeros((seq_len, self.control_dim), dtype=np.float32))
+            self.songs.append({
+                "note_seq": note_seq,
+                "style": song_seq[4],
+                "instr": song_seq[2],
+                "control_features": control_features,
+            })
+            self.cum_lengths.append(self.cum_lengths[-1] + len(note_seq) - seq_len)
 
     def _extract_control_features(self, control_seq, num_notes):
         """Extract control features per note with dimension control_dim"""
         if len(control_seq) == 0:
             return np.zeros((num_notes, self.control_dim), dtype=np.float32)
 
-        control_features = []
-
         # Define control codes we want to track
-        # You can expand this list based on what's in your data
-        control_codes = [1, 7, 11, 64, 71, 74]  # modulation, volume, expression, sustain, resonance, brightness
+        control_codes = [1, 7, 11, 64, 71, 74]
 
-        for i in range(num_notes):
-            control_feat = np.zeros(self.control_dim, dtype=np.float32)
+        # Build a full array then fill in values per note
+        control_features = np.zeros((num_notes, self.control_dim), dtype=np.float32)
+        for j, cc_code in enumerate(control_codes):
+            if j >= self.control_dim:
+                break
+            cc_events = control_seq[control_seq[:, 2] == cc_code]
+            if len(cc_events) > 0:
+                # Use the most recent value for all notes (broadcast)
+                control_features[:, j] = cc_events[-1, 3] / 127.0
+            else:
+                # Set reasonable defaults
+                if cc_code == 7:
+                    control_features[:, j] = 0.8
+                elif cc_code == 11:
+                    control_features[:, j] = 0.7
 
-            # Fill in the first few dimensions with actual control values
-            for j, cc_code in enumerate(control_codes):
-                if j >= self.control_dim:
-                    break  # Don't exceed our feature dimension
+        return control_features
 
-                cc_events = control_seq[control_seq[:, 2] == cc_code]
-                if len(cc_events) > 0:
-                    # Use the most recent value
-                    control_feat[j] = cc_events[-1, 3] / 127.0  # normalize
-                else:
-                    # Set reasonable defaults
-                    if cc_code == 7:  # volume
-                        control_feat[j] = 0.8
-                    elif cc_code == 11:  # expression
-                        control_feat[j] = 0.7
-                    else:
-                        control_feat[j] = 0.0
-
-            # Remaining dimensions can be used for other features or left as zero
-            control_features.append(control_feat)
-
-        return np.array(control_features)
+    def _get_song_and_offset(self, idx):
+        """Map flat index to (song_index, offset_within_song)."""
+        for song_idx in range(len(self.songs)):
+            if idx < self.cum_lengths[song_idx + 1]:
+                offset = idx - self.cum_lengths[song_idx]
+                return song_idx, offset
+        # Fallback (shouldn't happen with valid idx)
+        return len(self.songs) - 1, 0
 
     def __len__(self):
-        return len(self.note_events)
+        return self.cum_lengths[-1]
 
     def __getitem__(self, idx):
-        x = self.note_events[idx]  # shape: (seq_len, 4)
-        y = np.concatenate([self.note_events[idx][1:], self.note_events[idx][-1:]])
+        song_idx, offset = self._get_song_and_offset(idx)
+        song = self.songs[song_idx]
 
-        style = self.style_levels[idx]
-        instr_context = np.array([self.instr_levels[idx]], dtype=np.int64)
-        control_context = self.control_levels[idx]  # shape: (seq_len, control_dim)
+        x = song["note_seq"][offset:offset + self.seq_len]
+        y = np.concatenate([x[1:], x[-1:]])  # shifted by 1
+
+        style = np.array(song["style"], dtype=np.int64)
+        instr_context = np.array([song["instr"]], dtype=np.int64)
+        control_context = song["control_features"][offset:offset + self.seq_len]
+
+        # Pad control context if needed (last window may be short)
+        if len(control_context) < self.seq_len:
+            pad = np.zeros((self.seq_len - len(control_context), self.control_dim), dtype=np.float32)
+            control_context = np.concatenate([control_context, pad])
 
         return (
             torch.tensor(x, dtype=torch.long),
