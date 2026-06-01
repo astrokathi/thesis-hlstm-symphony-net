@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hlstm-framework"
+version = "1.0.0"
+description = "Hierarchical LSTM Framework for Symbolic Music Generation"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.24",
+    "muspy>=0.5.0",
+    "pretty-midi>=0.2.11",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "tqdm>=4.64",
+    "python-dotenv>=1.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
+    "scikit-learn>=1.2",
+    "tensorboard>=2.12",
+    "torchinfo>=1.8",
+    "joblib>=1.2",
+]
+
+[project.optional-dependencies]
+ray = ["ray[train]>=2.7"]
+dev = ["pytest>=7", "pytest-cov>=4", "black>=23", "ruff>=0.1"]
+all = ["hlstm-framework[ray,dev]"]
+
+[project.urls]
+Homepage = "https://github.com/astrokathi/thesis-hlstm-symphony-net"
+Repository = "https://github.com/astrokathi/thesis-hlstm-symphony-net"
+
+[tool.setuptools.packages.find]
+include = ["hlstm_framework*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

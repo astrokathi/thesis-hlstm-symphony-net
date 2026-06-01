@@ -1,0 +1,33 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Environment
+.env
+*.env.local
+
+# Data
+data/encoded/
+data/encoded/*.pkl
+
+# Models / outputs
+models/
+output/
+runs/
+assets/
+*.pt
+*.wav
+
+# Ray
+/tmp/ray_results/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
