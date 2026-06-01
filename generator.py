@@ -26,9 +26,10 @@ class MusicGenerator:
     ):
         """
         Generate a sequence of music tokens from a prompt.
+        Sprint 1: Pre-built tensor buffers + circular context buffer for speed.
         """
         if allowed_instruments is None:
-            allowed_instruments = list(range(128))  # Allow all instruments if none specified
+            allowed_instruments = list(range(128))
 
         if include_initial:
             generated = list(prompt_tokens)
@@ -38,32 +39,52 @@ class MusicGenerator:
         seq_len = 50
         hidden_states = None
 
-        # Convert prompt to tensor
-        if len(prompt_tokens) > 0:
-            x = torch.tensor(prompt_tokens[-seq_len:], dtype=torch.long).unsqueeze(0).to(self.device)
-        else:
-            # Start with a dummy token if no prompt
-            x = torch.zeros((1, 1, 4), dtype=torch.long).to(self.device)
-
-        style_tensor = torch.tensor([style], dtype=torch.long).to(self.device)
-
-        # Instrument context - use the allowed instruments
+        # --- Sprint 1: Pre-allocate style/instr tensors (reused every step) ---
+        style_tensor = torch.tensor([style], dtype=torch.long, device=self.device)
         instrument_tensor = torch.tensor([allowed_instruments], dtype=torch.long, device=self.device)
+
+        # Pre-build instrument mask (reused every step)
+        instr_mask = None
+        if allowed_instruments:
+            # Shape will match instr_logits at runtime; build a template and slice
+            instr_mask = torch.full((1, 1, Config.NUM_INSTRUMENTS), -1e9, dtype=torch.float, device=self.device)
+            instr_mask[:, :, allowed_instruments] = 0.0
+
+        # --- Sprint 1: Circular context buffer (avoids numpy→list→tensor round-trips) ---
+        if len(prompt_tokens) > 0:
+            init_ctx = prompt_tokens[-seq_len:].copy()
+        else:
+            init_ctx = np.zeros((1, 4), dtype=np.int64)
+
+        # Pad or truncate to seq_len
+        if len(init_ctx) < seq_len:
+            pad = np.zeros((seq_len - len(init_ctx), 4), dtype=np.int64)
+            ctx_buf = np.concatenate([pad, init_ctx])
+        else:
+            ctx_buf = init_ctx[-seq_len:]
+
+        x = torch.from_numpy(ctx_buf.astype(np.int64)).unsqueeze(0).to(self.device)
 
         print(f"[GENERATOR INFO]")
         print(f"  Allowed instruments: {allowed_instruments}")
         print(f"  Style: {style}")
         print("=" * 60)
 
+        # Helper to sample with top-k
+        def sample_topk(logits):
+            top_logits, top_idx = torch.topk(logits, k=min(top_k, logits.size(-1)), dim=-1)
+            probs = torch.softmax(top_logits, dim=-1)
+            sampled_idx = torch.multinomial(probs, num_samples=1)
+            return top_idx[0, sampled_idx].item()
+
         for step in range(num_steps):
             pitch_logits, dur_logits, vel_logits, instr_logits, hidden_states = self.model(
                 x, style=style_tensor, instr_context=instrument_tensor, hidden_states=hidden_states
             )
 
-            # Apply instrument masking - only allow specified instruments
-            if allowed_instruments:
-                mask = torch.ones_like(instr_logits) * -1e9
-                mask[:, :, allowed_instruments] = 0  # Set allowed instruments to 0 (no masking)
+            # Apply instrument masking (reuse pre-built mask template)
+            if instr_mask is not None:
+                mask = instr_mask.expand(-1, instr_logits.size(1), -1)
                 instr_logits = instr_logits + mask
 
             # Take only last token prediction
@@ -71,14 +92,6 @@ class MusicGenerator:
             dur_logits = dur_logits[:, -1, :] / temperature
             vel_logits = vel_logits[:, -1, :] / temperature
             instr_logits = instr_logits[:, -1, :] / temperature
-
-            # Sample each independently using top-k
-            def sample_topk(logits):
-                # Apply top-k filtering
-                top_logits, top_idx = torch.topk(logits, k=min(top_k, logits.size(-1)), dim=-1)
-                probs = torch.softmax(top_logits, dim=-1)
-                sampled_idx = torch.multinomial(probs, num_samples=1)
-                return top_idx[0, sampled_idx].item()
 
             pitch = sample_topk(pitch_logits)
             duration = sample_topk(dur_logits)
@@ -88,9 +101,13 @@ class MusicGenerator:
             next_note = np.array([pitch, duration, velocity, instrument], dtype=np.int16)
             generated.append(next_note)
 
-            # Update context - use only the most recent notes
-            recent_notes = np.array(generated[-seq_len:], dtype=np.int64)
-            x = torch.tensor(recent_notes).unsqueeze(0).to(self.device)
+            # --- Sprint 1: Circular buffer update (in-place on GPU tensor) ---
+            # Shift left by 1 and assign new note at end
+            x = torch.roll(x, shifts=-1, dims=1)
+            x[0, -1, 0] = pitch
+            x[0, -1, 1] = duration
+            x[0, -1, 2] = velocity
+            x[0, -1, 3] = instrument
 
             if step % 20 == 0:
                 print(f"Step {step}: pitch={pitch}, dur={duration}, vel={velocity}, instr={instrument}")
@@ -98,7 +115,6 @@ class MusicGenerator:
         generated_tokens = np.array(generated, dtype=np.int16)
         print(f"Generated {len(generated_tokens)} notes")
 
-        # Decode to MIDI
         midi_music = self.processor.decode({
             "note_level": generated_tokens,
             "instr_level": np.unique(generated_tokens[:, 3]),
@@ -121,6 +137,7 @@ class MusicGenerator:
     ):
         """
         Let the model generate naturally - it will create polyphony if it learned it.
+        Sprint 1: Pre-built tensors + circular buffer.
         """
         if allowed_instruments is None:
             allowed_instruments = list(range(128))
@@ -131,25 +148,42 @@ class MusicGenerator:
             generated = list()
         hidden_states = None
 
-        if len(prompt_tokens) > 0:
-            x = torch.tensor(prompt_tokens[-seq_len:], dtype=torch.long).unsqueeze(0).to(self.device)
-        else:
-            x = torch.zeros((1, 1, 4), dtype=torch.long).to(self.device)
-
-        style_tensor = torch.tensor([style], dtype=torch.long).to(self.device)
+        # --- Sprint 1: Pre-allocate tensors ---
+        style_tensor = torch.tensor([style], dtype=torch.long, device=self.device)
         instrument_tensor = torch.tensor([allowed_instruments], dtype=torch.long, device=self.device)
+        instr_mask = None
+        if allowed_instruments:
+            instr_mask = torch.full((1, 1, Config.NUM_INSTRUMENTS), -1e9, dtype=torch.float, device=self.device)
+            instr_mask[:, :, allowed_instruments] = 0.0
+
+        # --- Sprint 1: Circular buffer ---
+        if len(prompt_tokens) > 0:
+            init_ctx = prompt_tokens[-seq_len:].copy()
+        else:
+            init_ctx = np.zeros((1, 4), dtype=np.int64)
+        if len(init_ctx) < seq_len:
+            pad = np.zeros((seq_len - len(init_ctx), 4), dtype=np.int64)
+            ctx_buf = np.concatenate([pad, init_ctx])
+        else:
+            ctx_buf = init_ctx[-seq_len:]
+        x = torch.from_numpy(ctx_buf.astype(np.int64)).unsqueeze(0).to(self.device)
 
         print(f"Generating naturally with instruments: {allowed_instruments}")
+
+        def sample_single(logits):
+            top_logits, top_idx = torch.topk(logits, k=min(top_k, logits.size(-1)), dim=-1)
+            probs = torch.softmax(top_logits, dim=-1)
+            sampled_idx = torch.multinomial(probs, num_samples=1)
+            return top_idx[0, sampled_idx].item()
 
         for step in range(num_steps):
             pitch_logits, dur_logits, vel_logits, instr_logits, hidden_states = self.model(
                 x, style=style_tensor, instr_context=instrument_tensor, hidden_states=hidden_states
             )
 
-            # Apply instrument masking
-            if allowed_instruments:
-                mask = torch.ones_like(instr_logits) * -1e9
-                mask[:, :, allowed_instruments] = 0
+            # Apply instrument masking (reuse pre-built mask)
+            if instr_mask is not None:
+                mask = instr_mask.expand(-1, instr_logits.size(1), -1)
                 instr_logits = instr_logits + mask
 
             # Take only last token prediction
@@ -158,13 +192,6 @@ class MusicGenerator:
             vel_logits = vel_logits[:, -1, :] / temperature
             instr_logits = instr_logits[:, -1, :] / temperature
 
-            def sample_single(logits):
-                top_logits, top_idx = torch.topk(logits, k=min(top_k, logits.size(-1)), dim=-1)
-                probs = torch.softmax(top_logits, dim=-1)
-                sampled_idx = torch.multinomial(probs, num_samples=1)
-                return top_idx[0, sampled_idx].item()
-
-            # Generate ONE note naturally - let the model decide the instrument
             pitch = sample_single(pitch_logits)
             duration = sample_single(dur_logits)
             velocity = sample_single(vel_logits)
@@ -173,9 +200,12 @@ class MusicGenerator:
             next_note = np.array([pitch, duration, velocity, instrument], dtype=np.int16)
             generated.append(next_note)
 
-            # Update context
-            recent_notes = np.array(generated[-seq_len:], dtype=np.int64)
-            x = torch.tensor(recent_notes).unsqueeze(0).to(self.device)
+            # --- Sprint 1: Circular buffer update on GPU ---
+            x = torch.roll(x, shifts=-1, dims=1)
+            x[0, -1, 0] = pitch
+            x[0, -1, 1] = duration
+            x[0, -1, 2] = velocity
+            x[0, -1, 3] = instrument
 
             if step % 25 == 0:
                 current_instruments = np.unique([note[3] for note in generated[-20:]])
@@ -183,7 +213,6 @@ class MusicGenerator:
 
         generated_tokens = np.array(generated, dtype=np.int16)
 
-        # Analyze what we got
         unique_instruments = np.unique(generated_tokens[:, 3])
         instrument_counts = {instr: np.sum(generated_tokens[:, 3] == instr) for instr in unique_instruments}
 
@@ -206,14 +235,14 @@ class MusicGenerator:
             num_steps: int = 200,
             temperature: float = 0.7,
             allowed_instruments: List[int] = None,
-            notes_per_chord: int = 3,  # Force this many instruments per chord
+            notes_per_chord: int = 3,
             include_initial=False,
-            seq_len: int = 64,  # Added seq_len parameter
-            top_k: int = 30,  # Added top_k parameter (0 = no top-k filtering)
-            top_p: float = 0.9  # Added top_p parameter (1.0 = no nucleus sampling)
+            seq_len: int = 64,
+            top_k: int = 30,
+            top_p: float = 0.9
     ):
         """
-        Alternative approach that forces instrument diversity more aggressively.
+        Sprint 1/2: Pre-built tensors, circular buffer, batched instrument sampling.
         """
         if allowed_instruments is None:
             allowed_instruments = list(range(128))
@@ -225,40 +254,39 @@ class MusicGenerator:
 
         hidden_states = None
 
-        if len(prompt_tokens) > 0:
-            x = torch.tensor(prompt_tokens[-seq_len:], dtype=torch.long).unsqueeze(0).to(self.device)
-        else:
-            x = torch.zeros((1, 1, 4), dtype=torch.long).to(self.device)
-
-        style_tensor = torch.tensor([style], dtype=torch.long).to(self.device)
+        # --- Sprint 1: Pre-allocate tensors ---
+        style_tensor = torch.tensor([style], dtype=torch.long, device=self.device)
         instrument_tensor = torch.tensor([allowed_instruments], dtype=torch.long, device=self.device)
+        instr_mask = None
+        if allowed_instruments:
+            instr_mask = torch.full((1, Config.NUM_INSTRUMENTS), -1e9, dtype=torch.float, device=self.device)
+            instr_mask[:, allowed_instruments] = 0.0
 
-        current_time = 0
+        # --- Sprint 1: Circular buffer ---
+        if len(prompt_tokens) > 0:
+            init_ctx = prompt_tokens[-seq_len:].copy()
+        else:
+            init_ctx = np.zeros((1, 4), dtype=np.int64)
+        if len(init_ctx) < seq_len:
+            pad = np.zeros((seq_len - len(init_ctx), 4), dtype=np.int64)
+            ctx_buf = np.concatenate([pad, init_ctx])
+        else:
+            ctx_buf = init_ctx[-seq_len:]
+        x = torch.from_numpy(ctx_buf.astype(np.int64)).unsqueeze(0).to(self.device)
 
         def sample_single(logits):
-            """Sample a single value from logits with top-k and top-p filtering"""
-            # Apply temperature
             logits = logits / temperature
-
-            # Apply top-k filtering
             if top_k > 0:
                 indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
                 logits[indices_to_remove] = -float('Inf')
-
-            # Apply top-p (nucleus) sampling
             if top_p < 1.0:
                 sorted_logits, sorted_indices = torch.sort(logits, descending=True)
                 cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-
-                # Remove tokens with cumulative probability above the threshold
                 sorted_indices_to_remove = cumulative_probs > top_p
-                # Shift the indices to the right to keep the first token above the threshold
                 sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
                 sorted_indices_to_remove[..., 0] = 0
-
                 indices_to_remove = sorted_indices_to_remove.scatter(-1, sorted_indices, sorted_indices_to_remove)
                 logits[indices_to_remove] = -float('Inf')
-
             probs = torch.softmax(logits, dim=-1)
             sampled_idx = torch.multinomial(probs, num_samples=1)
             return sampled_idx.item()
@@ -277,55 +305,47 @@ class MusicGenerator:
                 x, style=style_tensor, instr_context=instrument_tensor, hidden_states=hidden_states
             )
 
-            # FORCE multiple instruments by sampling different ones
             pitch_logits = pitch_logits[:, -1, :]
             dur_logits = dur_logits[:, -1, :]
             vel_logits = vel_logits[:, -1, :]
             instr_logits = instr_logits[:, -1, :]
 
-            # Apply instrument masking to logits before sampling
-            if allowed_instruments:
-                mask = torch.ones_like(instr_logits) * -1e9
-                mask[:, allowed_instruments] = 0
-                instr_logits = instr_logits + mask
+            # Apply instrument masking (reuse pre-built mask)
+            if instr_mask is not None:
+                instr_logits = instr_logits + instr_mask
 
-            # Sample different instruments for this chord
+            # --- Sprint 2: Batch instrument sampling (single multinomial call) ---
+            instr_probs = torch.softmax(instr_logits / temperature, dim=-1)
+            sampled_instrs = torch.multinomial(instr_probs.squeeze(0), num_samples=min(notes_per_chord * 2, instr_logits.size(-1)), replacement=False)
             selected_instruments = []
-            attempts = 0
-
-            # First, try to sample from the model
-            while len(selected_instruments) < notes_per_chord and attempts < 20:
-                new_instr = sample_single(instr_logits)
-                if new_instr not in selected_instruments and new_instr in allowed_instruments:
-                    selected_instruments.append(new_instr)
-                attempts += 1
-
-            # If we couldn't get enough unique instruments, fill with random allowed ones
+            for idx in sampled_instrs.tolist():
+                if idx in allowed_instruments and idx not in selected_instruments:
+                    selected_instruments.append(idx)
+                if len(selected_instruments) >= notes_per_chord:
+                    break
             while len(selected_instruments) < notes_per_chord:
-                remaining = [inst for inst in allowed_instruments if inst not in selected_instruments]
+                remaining = [i for i in allowed_instruments if i not in selected_instruments]
                 if remaining:
-                    selected_instruments.append(np.random.choice(remaining))
+                    selected_instruments.append(remaining[0])
                 else:
-                    # If no more unique instruments, just duplicate (shouldn't happen with reasonable notes_per_chord)
                     break
 
-            # Generate notes for each selected instrument
             chord_notes = []
             for instrument in selected_instruments:
                 pitch = sample_single(pitch_logits)
                 duration = sample_single(dur_logits)
                 velocity = sample_single(vel_logits)
-
                 next_note = np.array([pitch, duration, velocity, instrument], dtype=np.int16)
                 chord_notes.append(next_note)
                 generated.append(next_note)
 
-            # Update context
-            recent_notes = np.array(generated[-seq_len:], dtype=np.int64)
-            x = torch.tensor(recent_notes).unsqueeze(0).to(self.device)
-
-            # Advance time
-            current_time += 4
+            # Circular buffer update
+            for note in chord_notes:
+                x = torch.roll(x, shifts=-1, dims=1)
+                x[0, -1, 0] = note[0]
+                x[0, -1, 1] = note[1]
+                x[0, -1, 2] = note[2]
+                x[0, -1, 3] = note[3]
 
             if step % 10 == 0:
                 pitches = [note[0] for note in chord_notes]
@@ -366,7 +386,8 @@ class MusicGenerator:
             control_context: np.ndarray = None
     ):
         """
-        Generate music with control value conditioning
+        Generate music with control value conditioning.
+        Sprint 1/2: Pre-built tensors, circular buffer, batched sampling.
         """
         if allowed_instruments is None:
             allowed_instruments = list(range(128))
@@ -378,74 +399,57 @@ class MusicGenerator:
 
         hidden_states = None
 
-        if len(prompt_tokens) > 0:
-            x = torch.tensor(prompt_tokens[-seq_len:], dtype=torch.long).unsqueeze(0).to(self.device)
-        else:
-            x = torch.zeros((1, 1, 4), dtype=torch.long).to(self.device)
-
-        style_tensor = torch.tensor([style], dtype=torch.long).to(self.device)
+        # --- Sprint 1: Pre-allocate tensors ---
+        style_tensor = torch.tensor([style], dtype=torch.long, device=self.device)
         instrument_tensor = torch.tensor([allowed_instruments], dtype=torch.long, device=self.device)
+        instr_mask = None
+        if allowed_instruments:
+            instr_mask = torch.full((1, 1, Config.NUM_INSTRUMENTS), -1e9, dtype=torch.float, device=self.device)
+            instr_mask[:, :, allowed_instruments] = 0.0
 
-        # Prepare control context
+        # --- Prepare control context (one-time) ---
         if control_context is not None:
             if isinstance(control_context, list):
                 control_context = np.array(control_context, dtype=np.float32)
-
-            # Create control vector with 128 dimensions
-            control_vector = np.zeros(128, dtype=np.float32)
-
-            # Map provided control values
-            if len(control_context) >= 1:
-                control_vector[0] = control_context[0]  # modulation
-            if len(control_context) >= 2:
-                control_vector[1] = control_context[1]  # volume
-            if len(control_context) >= 3:
-                control_vector[2] = control_context[2]  # expression
-            if len(control_context) >= 4:
-                control_vector[3] = control_context[3]  # sustain
-
-            control_tensor = torch.tensor(control_vector, dtype=torch.float).to(self.device)
-            control_tensor = control_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, 128)
-            control_tensor = control_tensor.expand(1, seq_len, -1)  # (1, seq_len, 128)
-
+            control_vector = np.zeros(Config.CONTROL_DIM, dtype=np.float32)
+            for i in range(min(len(control_context), 4)):
+                control_vector[i] = control_context[i]
         else:
-            # Default neutral control values
-            control_vector = np.zeros(128, dtype=np.float32)
-            control_vector[0] = 0.0  # modulation
+            control_vector = np.zeros(Config.CONTROL_DIM, dtype=np.float32)
             control_vector[1] = 0.7  # volume
             control_vector[2] = 0.7  # expression
-            control_vector[3] = 0.0  # sustain
+        control_tensor = torch.from_numpy(control_vector).float().to(self.device)
+        control_tensor = control_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, D)
 
-            control_tensor = torch.tensor(control_vector, dtype=torch.float).to(self.device)
-            control_tensor = control_tensor.unsqueeze(0).unsqueeze(0).expand(1, seq_len, -1)
-
-        current_time = 0
+        # --- Sprint 1: Circular buffer ---
+        if len(prompt_tokens) > 0:
+            init_ctx = prompt_tokens[-seq_len:].copy()
+        else:
+            init_ctx = np.zeros((1, 4), dtype=np.int64)
+        if len(init_ctx) < seq_len:
+            pad = np.zeros((seq_len - len(init_ctx), 4), dtype=np.int64)
+            ctx_buf = np.concatenate([pad, init_ctx])
+        else:
+            ctx_buf = init_ctx[-seq_len:]
+        x = torch.from_numpy(ctx_buf.astype(np.int64)).unsqueeze(0).to(self.device)
 
         def sample_single(logits):
-            """Sample a single value from logits with top-k and top-p filtering"""
-            # Ensure logits are 1D or 2D for multinomial
             if logits.dim() > 2:
-                logits = logits.squeeze(0)  # Remove batch dimension if present
-
+                logits = logits.squeeze(0)
             logits = logits / temperature
-
             if top_k > 0:
-                # For 2D logits, apply top-k along the last dimension
                 if logits.dim() == 2:
                     top_logits, top_idx = torch.topk(logits, k=min(top_k, logits.size(-1)), dim=-1)
                     filtered_logits = torch.full_like(logits, -float('Inf'))
                     filtered_logits.scatter_(-1, top_idx, top_logits)
                     logits = filtered_logits
                 else:
-                    # For 1D logits
                     top_logits, top_idx = torch.topk(logits, k=min(top_k, logits.size(-1)))
                     filtered_logits = torch.full_like(logits, -float('Inf'))
                     filtered_logits[top_idx] = top_logits
                     logits = filtered_logits
-
             if top_p < 1.0:
                 if logits.dim() == 2:
-                    # Apply top-p to each row for 2D tensors
                     sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
                     cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
                     sorted_indices_to_remove = cumulative_probs > top_p
@@ -454,7 +458,6 @@ class MusicGenerator:
                     indices_to_remove = sorted_indices_to_remove.scatter(-1, sorted_indices, sorted_indices_to_remove)
                     logits[indices_to_remove] = -float('Inf')
                 else:
-                    # Apply top-p to 1D tensor
                     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
                     cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
                     sorted_indices_to_remove = cumulative_probs > top_p
@@ -462,13 +465,9 @@ class MusicGenerator:
                     sorted_indices_to_remove[0] = 0
                     indices_to_remove = sorted_indices[sorted_indices_to_remove]
                     logits[indices_to_remove] = -float('Inf')
-
             probs = torch.softmax(logits, dim=-1)
-
-            # Ensure probs is 1D for multinomial
             if probs.dim() == 2:
-                probs = probs.squeeze(0)  # Remove batch dimension
-
+                probs = probs.squeeze(0)
             sampled_idx = torch.multinomial(probs, num_samples=1)
             return sampled_idx.item()
 
@@ -486,67 +485,59 @@ class MusicGenerator:
         print("=" * 50)
 
         for step in range(num_steps):
+            # Expand control_tensor to match current seq_len
+            cur_control = control_tensor.expand(1, x.size(1), -1)
+
             pitch_logits, dur_logits, vel_logits, instr_logits, hidden_states = self.model(
-                x,
-                style=style_tensor,
-                instr_context=instrument_tensor,
-                control_context=control_tensor,
-                hidden_states=hidden_states
+                x, style=style_tensor, instr_context=instrument_tensor,
+                control_context=cur_control, hidden_states=hidden_states
             )
 
-            # Apply instrument masking
-            if allowed_instruments:
-                mask = torch.ones_like(instr_logits) * -1e9
-                mask[:, :, allowed_instruments] = 0
+            # Apply instrument masking (reuse pre-built mask)
+            if instr_mask is not None:
+                mask = instr_mask.expand(-1, instr_logits.size(1), -1)
                 instr_logits = instr_logits + mask
 
-            # Take only the last timestep predictions
-            pitch_logits_last = pitch_logits[:, -1, :]  # Shape: (1, num_pitches)
-            dur_logits_last = dur_logits[:, -1, :]  # Shape: (1, num_durations)
-            vel_logits_last = vel_logits[:, -1, :]  # Shape: (1, num_velocities)
-            instr_logits_last = instr_logits[:, -1, :]  # Shape: (1, num_instruments)
+            pitch_logits_last = pitch_logits[:, -1, :]
+            dur_logits_last = dur_logits[:, -1, :]
+            vel_logits_last = vel_logits[:, -1, :]
+            instr_logits_last = instr_logits[:, -1, :]
 
-            # Sample different instruments for this chord
+            # --- Sprint 2: Batch instrument sampling ---
+            instr_probs = torch.softmax(instr_logits_last / temperature, dim=-1)
+            sampled_instrs = torch.multinomial(
+                instr_probs.squeeze(0), num_samples=min(notes_per_chord * 2, instr_logits_last.size(-1)),
+                replacement=False
+            )
             selected_instruments = []
-            attempts = 0
-
-            while len(selected_instruments) < notes_per_chord and attempts < 20:
-                new_instr = sample_single(instr_logits_last)
-                if new_instr not in selected_instruments and new_instr in allowed_instruments:
-                    selected_instruments.append(new_instr)
-                attempts += 1
-
-            # If we couldn't get enough unique instruments, fill with random allowed ones
+            for idx in sampled_instrs.tolist():
+                if idx in allowed_instruments and idx not in selected_instruments:
+                    selected_instruments.append(idx)
+                if len(selected_instruments) >= notes_per_chord:
+                    break
             while len(selected_instruments) < notes_per_chord:
-                remaining = [inst for inst in allowed_instruments if inst not in selected_instruments]
+                remaining = [i for i in allowed_instruments if i not in selected_instruments]
                 if remaining:
-                    selected_instruments.append(np.random.choice(remaining))
+                    selected_instruments.append(remaining[0])
                 else:
-                    # If no more unique instruments, break
                     break
 
-            # Generate notes for each selected instrument
             chord_notes = []
             for instrument in selected_instruments:
                 pitch = sample_single(pitch_logits_last)
                 duration = sample_single(dur_logits_last)
                 velocity = sample_single(vel_logits_last)
-
                 next_note = np.array([pitch, duration, velocity, instrument], dtype=np.int16)
                 chord_notes.append(next_note)
                 generated.append(next_note)
 
-            # Update context with the most recent notes
-            recent_notes = np.array(generated[-seq_len:], dtype=np.int64)
-            if len(recent_notes) < seq_len:
-                # Pad if we don't have enough notes yet
-                padding = np.zeros((seq_len - len(recent_notes), 4), dtype=np.int64)
-                recent_notes = np.concatenate([recent_notes, padding])
-
-            x = torch.tensor(recent_notes, dtype=torch.long).unsqueeze(0).to(self.device)
-
-            # Advance time
-            current_time += 4
+            # Circular buffer update
+            for note in chord_notes:
+                x = torch.roll(x, shifts=-1, dims=1)
+                x[0, -1, 0] = note[0]
+                x[0, -1, 1] = note[1]
+                x[0, -1, 2] = note[2]
+                x[0, -1, 3] = note[3]
 
             if step % 10 == 0:
                 pitches = [note[0] for note in chord_notes]

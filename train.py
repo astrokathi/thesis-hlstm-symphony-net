@@ -145,8 +145,19 @@ def train_model(
     train_size = len(dataset) - val_size
     train_ds, val_ds = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+    # --- Sprint 1: Multi-threaded data loading ---
+    num_workers = Config.NUM_WORKERS
+    pin_memory = Config.PIN_MEMORY
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, pin_memory=pin_memory,
+        persistent_workers=(num_workers > 0)
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=pin_memory,
+        persistent_workers=(num_workers > 0)
+    )
 
     model = HEventModel()
     vocab_size = (
@@ -161,9 +172,18 @@ def train_model(
     print(f"  Velocity: {model.velocity_embed.num_embeddings}")
     print(f"  Instrument: {model.instrument_embed.num_embeddings}")
     print(f"  --> Effective combined vocab size: {vocab_size:,}")
+    print(f"  DataLoader: num_workers={num_workers}, pin_memory={pin_memory}")
+    print(f"  AMP: {Config.USE_AMP},  LR scheduler: {Config.LR_SCHEDULER}")
     print("=" * 60)
 
-    trainer = HLSTMTrainer(model, lr=lr, device=Config.DEVICE)
+    # --- Sprint 1: Parse loss weights from config ---
+    loss_weights = [float(w) for w in Config.LOSS_WEIGHTS.split(",")]
+    trainer = HLSTMTrainer(
+        model, lr=lr, device=Config.DEVICE,
+        use_amp=Config.USE_AMP, loss_weights=loss_weights,
+        scheduler_type=Config.LR_SCHEDULER, lr_patience=Config.LR_PATIENCE,
+        lr_min=Config.LR_MIN, grad_clip_norm=Config.GRAD_CLIP_NORM
+    )
 
     # Resume checkpoint if provided
     start_epoch = 1
@@ -199,13 +219,19 @@ def train_model(
         avg_val_loss = val_loss / len(val_loader)
         val_metrics = calculate_metrics(avg_val_loss)
 
+        # Sprint 1: LR scheduler step
+        trainer.scheduler_step(avg_val_loss)
+        current_lr = trainer.get_lr()
+
         print(f"Epoch {epoch:03d} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | "
-              f"Train PPL: {train_metrics['perplexity']:.2f} | Val PPL: {val_metrics['perplexity']:.2f}")
+              f"Train PPL: {train_metrics['perplexity']:.2f} | Val PPL: {val_metrics['perplexity']:.2f} | "
+              f"LR: {current_lr:.2e}")
 
         writer.add_scalar("Loss/Train", avg_train_loss, epoch)
         writer.add_scalar("Loss/Validation", avg_val_loss, epoch)
         writer.add_scalar("Perplexity/Train", train_metrics["perplexity"], epoch)
         writer.add_scalar("Perplexity/Validation", val_metrics["perplexity"], epoch)
+        writer.add_scalar("LR", current_lr, epoch)
 
         # -------------------
         # Checkpoint & Early Stopping

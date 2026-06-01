@@ -27,6 +27,16 @@ class Config:
     OUTPUT_DIR = os.getenv("TRAIN_OUTPUT_DIR", "models")
     LOG_DIR = os.getenv("TRAIN_LOG_DIR", "runs/hlstm")
 
+    # Sprint 1 — Training performance upgrades
+    NUM_WORKERS = int(os.getenv("TRAIN_NUM_WORKERS", 2))
+    PIN_MEMORY = os.getenv("TRAIN_PIN_MEMORY", "true").lower() == "true"
+    USE_AMP = os.getenv("TRAIN_USE_AMP", "true").lower() == "true"
+    LOSS_WEIGHTS = os.getenv("TRAIN_LOSS_WEIGHTS", "1.0,1.0,1.0,1.0")  # pitch,dur,vel,instr
+    LR_SCHEDULER = os.getenv("TRAIN_LR_SCHEDULER", "plateau")  # "plateau", "cosine", or "none"
+    LR_PATIENCE = int(os.getenv("TRAIN_LR_PATIENCE", 3))
+    LR_MIN = float(os.getenv("TRAIN_LR_MIN", 1e-6))
+    GRAD_CLIP_NORM = float(os.getenv("TRAIN_GRAD_CLIP_NORM", 0.0))  # 0 = disabled
+
     # Preprocessing
     DATA_DIR = os.getenv("PREPROCESS_DATA_DIR", "/Users/kathi.s/ML_Projects/thesis/SymphonyNet")
     ENCODED_PATH = os.getenv("PREPROCESS_ENCODED_PATH", "data/encoded/encoded_tokens_25_new.pkl")

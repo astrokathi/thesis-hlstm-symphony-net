@@ -144,11 +144,49 @@ class HEventModel(nn.Module):
 
 
 class HLSTMTrainer:
-    def __init__(self, model, lr=1e-3, device=None):
+    def __init__(self, model, lr=1e-3, device=None,
+                 use_amp=True, loss_weights=None,
+                 scheduler_type="none", lr_patience=3, lr_min=1e-6,
+                 grad_clip_norm=0.0):
         self.device = device or Config.DEVICE if device is None else device
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
         self.criterion = nn.CrossEntropyLoss()
+
+        # --- Sprint 1: AMP ---
+        self.use_amp = use_amp and self.device.type in ("cuda", "mps")
+        self.scaler = torch.amp.GradScaler(device=self.device.type) if self.use_amp else None
+        self.grad_clip_norm = grad_clip_norm
+
+        # --- Sprint 1: Loss weights ---
+        if loss_weights is None:
+            self.loss_weights = [1.0, 1.0, 1.0, 1.0]
+        else:
+            self.loss_weights = loss_weights
+
+        # --- Sprint 1: LR scheduler ---
+        self.scheduler = None
+        self.scheduler_type = scheduler_type
+        if scheduler_type == "plateau":
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode="min", factor=0.5,
+                patience=lr_patience, min_lr=lr_min, verbose=True
+            )
+        elif scheduler_type == "cosine":
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=30, eta_min=lr_min
+            )
+
+    def _compute_loss(self, pitch_logits, dur_logits, vel_logits, instr_logits, y_pitch, y_dur, y_vel, y_instr):
+        pitch_loss = self.criterion(pitch_logits.view(-1, pitch_logits.size(-1)), y_pitch.reshape(-1))
+        dur_loss = self.criterion(dur_logits.view(-1, dur_logits.size(-1)), y_dur.reshape(-1))
+        vel_loss = self.criterion(vel_logits.view(-1, vel_logits.size(-1)), y_vel.reshape(-1))
+        instr_loss = self.criterion(instr_logits.view(-1, instr_logits.size(-1)), y_instr.reshape(-1))
+
+        w = self.loss_weights
+        loss = (w[0] * pitch_loss + w[1] * dur_loss + w[2] * vel_loss + w[3] * instr_loss) / sum(w)
+        return loss, {"pitch": pitch_loss.item(), "duration": dur_loss.item(),
+                       "velocity": vel_loss.item(), "instrument": instr_loss.item()}
 
     def train_step(self, x, y, style=None, instr_context=None, control_context=None):
         self.model.train()
@@ -166,18 +204,35 @@ class HLSTMTrainer:
         y_instr = y[:, :, 3].long()
 
         self.optimizer.zero_grad()
-        pitch_logits, dur_logits, vel_logits, instr_logits, _ = self.model(
-            x, style=style, instr_context=instr_context, control_context=control_context
-        )
 
-        pitch_loss = self.criterion(pitch_logits.view(-1, pitch_logits.size(-1)), y_pitch.reshape(-1))
-        dur_loss = self.criterion(dur_logits.view(-1, dur_logits.size(-1)), y_dur.reshape(-1))
-        vel_loss = self.criterion(vel_logits.view(-1, vel_logits.size(-1)), y_vel.reshape(-1))
-        instr_loss = self.criterion(instr_logits.view(-1, instr_logits.size(-1)), y_instr.reshape(-1))
-        loss = (pitch_loss + dur_loss + vel_loss + instr_loss) / 4
+        if self.use_amp:
+            with torch.amp.autocast(device_type=self.device.type):
+                pitch_logits, dur_logits, vel_logits, instr_logits, _ = self.model(
+                    x, style=style, instr_context=instr_context, control_context=control_context
+                )
+                loss, _ = self._compute_loss(
+                    pitch_logits, dur_logits, vel_logits, instr_logits,
+                    y_pitch, y_dur, y_vel, y_instr
+                )
+            self.scaler.scale(loss).backward()
+            if self.grad_clip_norm > 0:
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            pitch_logits, dur_logits, vel_logits, instr_logits, _ = self.model(
+                x, style=style, instr_context=instr_context, control_context=control_context
+            )
+            loss, _ = self._compute_loss(
+                pitch_logits, dur_logits, vel_logits, instr_logits,
+                y_pitch, y_dur, y_vel, y_instr
+            )
+            loss.backward()
+            if self.grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+            self.optimizer.step()
 
-        loss.backward()
-        self.optimizer.step()
         return loss.item()
 
     def eval_step(self, x, y, style=None, instr_context=None, control_context=None):
@@ -196,17 +251,34 @@ class HLSTMTrainer:
             y_vel = y[:, :, 2].long()
             y_instr = y[:, :, 3].long()
 
-            pitch_logits, dur_logits, vel_logits, instr_logits, _ = self.model(
-                x, style=style, instr_context=instr_context, control_context=control_context
-            )
-
-            pitch_loss = self.criterion(pitch_logits.view(-1, pitch_logits.size(-1)), y_pitch.reshape(-1))
-            dur_loss = self.criterion(dur_logits.view(-1, dur_logits.size(-1)), y_dur.reshape(-1))
-            vel_loss = self.criterion(vel_logits.view(-1, vel_logits.size(-1)), y_vel.reshape(-1))
-            instr_loss = self.criterion(instr_logits.view(-1, instr_logits.size(-1)), y_instr.reshape(-1))
-            loss = (pitch_loss + dur_loss + vel_loss + instr_loss) / 4
+            if self.use_amp:
+                with torch.amp.autocast(device_type=self.device.type):
+                    pitch_logits, dur_logits, vel_logits, instr_logits, _ = self.model(
+                        x, style=style, instr_context=instr_context, control_context=control_context
+                    )
+                    loss, _ = self._compute_loss(
+                        pitch_logits, dur_logits, vel_logits, instr_logits,
+                        y_pitch, y_dur, y_vel, y_instr
+                    )
+            else:
+                pitch_logits, dur_logits, vel_logits, instr_logits, _ = self.model(
+                    x, style=style, instr_context=instr_context, control_context=control_context
+                )
+                loss, _ = self._compute_loss(
+                    pitch_logits, dur_logits, vel_logits, instr_logits,
+                    y_pitch, y_dur, y_vel, y_instr
+                )
 
         return loss.item()
+
+    def scheduler_step(self, val_loss):
+        if self.scheduler_type == "plateau":
+            self.scheduler.step(val_loss)
+        elif self.scheduler_type == "cosine":
+            self.scheduler.step()
+
+    def get_lr(self):
+        return self.optimizer.param_groups[0]["lr"]
 
     def save(self, path):
         torch.save(self.model.state_dict(), path)

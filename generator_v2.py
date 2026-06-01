@@ -111,118 +111,106 @@ class MusicGeneratorV2:
           - then autoregressively generate num_steps new notes, using sliding window context
           - instruments_lst controls allowed instruments; instr_context passed to model
           - control_context (float) projected by model if supported
+        Sprint 1: Pre-built tensors, circular buffer for context.
         """
         window_size = window_size or self.window_size
 
-        # convert prompt to np array and ensure shape
         prompt_tokens = np.array(prompt_tokens, dtype=np.int64)
         prompt_len = len(prompt_tokens)
 
-        # Build initial generated list
         generated = [tuple(tok.tolist()) for tok in prompt_tokens] if include_prompt_in_output else []
-        # We'll feed the model with prompt to get initial hidden states.
-        # Use a tensor version of the whole prompt (batch_size=1)
+
         if prompt_len == 0:
-            # If no prompt given, use a small default seed: C major arpeggio
             seed = np.array([[60, 8, 80, base_instr], [64, 8, 80, base_instr], [67, 8, 80, base_instr]], dtype=np.int64)
             prompt_tokens = seed
             prompt_len = len(prompt_tokens)
             if include_prompt_in_output:
                 generated = [tuple(tok.tolist()) for tok in prompt_tokens]
 
-        # Prepare tensors once (avoid repeated slow list->tensor conversions)
-        # We'll use int64 for embedding indices, but control_context should be float if used.
-        prompt_tensor = torch.from_numpy(prompt_tokens.astype(np.int64)).unsqueeze(0).to(
-            self.device)  # [1, prompt_len, 4]
+        # --- Sprint 1: Pre-allocate tensors once ---
+        prompt_tensor = torch.from_numpy(prompt_tokens.astype(np.int64)).unsqueeze(0).to(self.device)
         style_tensor = torch.tensor([style], dtype=torch.long, device=self.device)
 
-        # Prepare instr_context tensor: accept list of ints (global context) or tensor
         if instr_context is None:
             instr_context_tensor = None
         else:
             instr_context_tensor = torch.tensor(instr_context, dtype=torch.long, device=self.device)
             if instr_context_tensor.dim() == 1:
-                instr_context_tensor = instr_context_tensor.unsqueeze(0)  # [1, num_instrs]
+                instr_context_tensor = instr_context_tensor.unsqueeze(0)
 
-        # Prepare instruments list for mapping
         instruments_lst = instruments_lst or []
 
-        # Prepare control_context if given (float)
+        # Pre-build instrument mask
+        instr_mask = None
+        if instruments_lst:
+            instr_mask = torch.full((Config.NUM_INSTRUMENTS,), -float("Inf"), dtype=torch.float, device=self.device)
+            instr_mask[instruments_lst] = 0.0
+
+        # Control tensor (one-time)
         control_tensor = None
         if control_context is not None:
             control_np = np.array(control_context, dtype=np.float32)
-            # if shape (control_dim,) -> expand to [1, control_dim]
             if control_np.ndim == 1:
                 control_np = control_np[np.newaxis, :]
-            control_tensor = torch.from_numpy(control_np).to(self.device)  # float tensor
+            control_tensor = torch.from_numpy(control_np).to(self.device)
 
         # --- Run the prompt through the model to get initial hidden_states ---
-        # We feed the full prompt (note-level features) to obtain initial hidden states.
-        # The model returns logits and hidden states; we only care about hidden_states to seed generation.
-        # We'll discard logits for the prompt (unless you want teacher forcing / seq2seq training)
         _, _, _, _, hidden_states = self.model(prompt_tensor, style=style_tensor, instr_context=instr_context_tensor)
 
-        # Maintain a context buffer (list of tokens) for autoregression
-        context = list(prompt_tokens.tolist())
-        if len(context) > window_size:
-            context = context[-window_size:]
+        # --- Sprint 1: Circular buffer on GPU ---
+        context_list = list(prompt_tokens.tolist())
+        if len(context_list) > window_size:
+            context_list = context_list[-window_size:]
+
+        # Build GPU circular buffer
+        ctx_buf = np.array(context_list[-window_size:], dtype=np.int64)
+        if len(ctx_buf) < window_size:
+            pad = np.zeros((window_size - len(ctx_buf), 4), dtype=np.int64)
+            ctx_buf = np.concatenate([pad, ctx_buf])
+        x = torch.from_numpy(ctx_buf).unsqueeze(0).to(self.device)
 
         # Keep track of recent durations/pitches for heuristic biasing
-        recent_durations = [int(t[1]) for t in context[-16:]] if len(context) > 0 else []
-        recent_pitches = [int(t[0]) for t in context[-16:]] if len(context) > 0 else []
+        recent_durations = [int(t[1]) for t in context_list[-16:]] if len(context_list) > 0 else []
+        recent_pitches = [int(t[0]) for t in context_list[-16:]] if len(context_list) > 0 else []
 
         # --- Generation loop ---
         for step in range(num_steps):
-            # Prepare input tensor from context: use last window_size tokens
-            ctx_window = np.array(context[-window_size:], dtype=np.int64)
-            x = torch.from_numpy(ctx_window).unsqueeze(0).to(self.device)  # [1, seq_len, 4]
-
-            # If model supports control_context and we have a float tensor, expand if needed
+            # Control context expansion (on the fly, but no numpy round-trip)
             control_ctx_to_pass = None
             if control_tensor is not None:
-                # control_tensor shape: [1, control_dim] or [1, seq_len, control_dim]
                 if control_tensor.dim() == 2:
-                    # expand to seq_len
                     control_ctx_to_pass = control_tensor.unsqueeze(1).expand(-1, x.size(1), -1)
                 else:
-                    # if already seq_len, maybe mismatch; trim/pad if necessary
                     control_ctx_to_pass = control_tensor[..., :x.size(1), :]
 
-            # Call model once (returns logits for whole context and new hidden states)
             pitch_logits_all, dur_logits_all, vel_logits_all, instr_logits_all, hidden_states = self.model(
-                x,
-                style=style_tensor,
-                instr_context=instr_context_tensor,
+                x, style=style_tensor, instr_context=instr_context_tensor,
                 hidden_states=hidden_states
             )
 
-            # pick last time-step logits
-            pitch_logits = pitch_logits_all[:, -1, :].squeeze(0)  # shape [pitch_vocab]
+            pitch_logits = pitch_logits_all[:, -1, :].squeeze(0)
             dur_logits = dur_logits_all[:, -1, :].squeeze(0)
             vel_logits = vel_logits_all[:, -1, :].squeeze(0)
             instr_logits = instr_logits_all[:, -1, :].squeeze(0)
 
-            # Apply simple musical constraints & biases:
+            # Apply instrument masking (reuse pre-built mask)
+            if instr_mask is not None:
+                instr_logits = instr_logits + instr_mask
 
-            # 1) limit large leaps relative to most recent pitch
+            # Musical constraints
             if len(recent_pitches) > 0:
                 prev_pitch = int(recent_pitches[-1])
                 pitch_logits = self.limit_leap(prev_pitch, pitch_logits, max_leap=max_leap)
 
-            # 2) motif repetition boost: if a motif (last motif_length pitches) exists, boost repeating it
             if motif_length > 0 and len(recent_pitches) >= motif_length:
                 motif = recent_pitches[-motif_length:]
-                # check immediate previous occurrence (naive)
                 for i in range(len(recent_pitches) - motif_length):
                     if recent_pitches[i:i + motif_length] == motif:
-                        # boost probability of repeating motif by raising logits of the next expected pitch (if within vocab)
-                        # here we only boost next pitch predicted equal to motif[0] (very simple)
                         expected_next = motif[0]
                         if 0 <= expected_next < pitch_logits.size(0):
                             pitch_logits[expected_next] = pitch_logits[expected_next] * motif_repeat_boost
                         break
 
-            # 3) bias duration sampling to recent durations distribution (simple: if recent durations exist, slightly favor them)
             if recent_durations:
                 duration_bias = torch.zeros_like(dur_logits)
                 for d in recent_durations[-8:]:
@@ -230,7 +218,7 @@ class MusicGeneratorV2:
                         duration_bias[d] += 1.0
                 if duration_bias.sum() > 0:
                     duration_bias = duration_bias / (duration_bias.sum() + 1e-9)
-                    dur_logits = dur_logits + torch.log1p(duration_bias * 5.0)  # boost probabilities
+                    dur_logits = dur_logits + torch.log1p(duration_bias * 5.0)
 
             # Sampling
             pitch_idx = self.sample_from_logits(pitch_logits, temperature=temperature, top_k=top_k, top_p=top_p)
@@ -238,18 +226,20 @@ class MusicGeneratorV2:
             vel_idx = self.sample_from_logits(vel_logits, temperature=temperature, top_k=top_k, top_p=top_p)
             instr_idx = self.sample_from_logits(instr_logits, temperature=temperature, top_k=top_k, top_p=top_p)
 
-            # Map instrument to allowed instruments_list (if provided) to keep ensemble coherent
             if instruments_lst:
                 final_instr = self.map_instr_to_list(instr_idx, instruments_lst, base_instr=base_instr)
             else:
                 final_instr = instr_idx
 
-            # Append new note
-            next_note = np.array([pitch_idx, dur_idx, vel_idx, final_instr], dtype=np.int16)
-            context.append(next_note.tolist())
-            generated.append(tuple(next_note.tolist()))
+            # --- Sprint 1: Circular buffer update (GPU in-place, no numpy round-trip) ---
+            x = torch.roll(x, shifts=-1, dims=1)
+            x[0, -1, 0] = pitch_idx
+            x[0, -1, 1] = dur_idx
+            x[0, -1, 2] = vel_idx
+            x[0, -1, 3] = final_instr
 
-            # update recent trackers
+            generated.append(tuple([pitch_idx, dur_idx, vel_idx, final_instr]))
+
             recent_pitches.append(int(pitch_idx))
             recent_durations.append(int(dur_idx))
             if len(recent_pitches) > 128:
