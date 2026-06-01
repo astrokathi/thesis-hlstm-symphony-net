@@ -159,11 +159,14 @@ def train_model(
         persistent_workers=(num_workers > 0)
     )
 
-    # --- Sprint 3: Pass model config flags ---
+    # --- Sprint 3/4: Pass model config flags ---
     model = HEventModel(
         use_position_encoding=Config.USE_POSITION_ENCODING,
         num_positions=Config.NUM_POSITIONS,
         use_checkpointing=Config.USE_CHECKPOINTING,
+        use_cross_attention=Config.USE_CROSS_ATTENTION,
+        use_instr_attention_pooling=Config.USE_INSTR_ATTN_POOLING,
+        use_token_fusion=Config.USE_TOKEN_FUSION,
     )
 
     # --- Sprint 3: Optional torch.compile ---
@@ -186,6 +189,8 @@ def train_model(
     print(f"  AMP: {Config.USE_AMP},  LR scheduler: {Config.LR_SCHEDULER}")
     print(f"  Position encoding: {Config.USE_POSITION_ENCODING},  Checkpointing: {Config.USE_CHECKPOINTING}")
     print(f"  torch.compile: {Config.USE_TORCH_COMPILE}")
+    print(f"  Cross-attention: {Config.USE_CROSS_ATTENTION},  Instr attn pooling: {Config.USE_INSTR_ATTN_POOLING}")
+    print(f"  Token fusion: {Config.USE_TOKEN_FUSION}")
     print("=" * 60)
 
     # --- Sprint 1: Parse loss weights from config ---

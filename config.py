@@ -33,6 +33,11 @@ class Config:
     USE_CHECKPOINTING = os.getenv("MODEL_USE_CHECKPOINTING", "false").lower() == "true"
     USE_TORCH_COMPILE = os.getenv("MODEL_USE_TORCH_COMPILE", "false").lower() == "true"
 
+    # Sprint 4 — Deep architecture upgrades
+    USE_CROSS_ATTENTION = os.getenv("MODEL_USE_CROSS_ATTENTION", "false").lower() == "true"
+    USE_INSTR_ATTN_POOLING = os.getenv("MODEL_USE_INSTR_ATTN_POOLING", "false").lower() == "true"
+    USE_TOKEN_FUSION = os.getenv("MODEL_USE_TOKEN_FUSION", "false").lower() == "true"
+
     # Sprint 1 — Training performance upgrades
     NUM_WORKERS = int(os.getenv("TRAIN_NUM_WORKERS", 2))
     PIN_MEMORY = os.getenv("TRAIN_PIN_MEMORY", "true").lower() == "true"
