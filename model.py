@@ -1,8 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from torchinfo import summary
-
+from config import Config
 
 class HEventModel(nn.Module):
     """
@@ -11,16 +10,16 @@ class HEventModel(nn.Module):
     """
 
     def __init__(self,
-                 num_pitches=128,
-                 num_durations=128,
-                 num_velocities=128,
-                 num_instruments=128,
-                 style_classes=2,
-                 embed_dim=256,
-                 control_dim=128,
-                 hidden_dim=512,
-                 dropout=0.3,
-                 device='mps'):
+                 num_pitches=Config.NUM_PITCHES,
+                 num_durations=Config.NUM_DURATIONS,
+                 num_velocities=Config.NUM_VELOCITIES,
+                 num_instruments=Config.NUM_INSTRUMENTS,
+                 style_classes=Config.STYLE_CLASSES,
+                 embed_dim=Config.EMBED_DIM,
+                 control_dim=Config.CONTROL_DIM,
+                 hidden_dim=Config.HIDDEN_DIM,
+                 dropout=Config.DROPOUT,
+                 device=Config.DEVICE):
         super(HEventModel, self).__init__()
 
         self.hidden_dim = hidden_dim
@@ -146,7 +145,7 @@ class HEventModel(nn.Module):
 
 class HLSTMTrainer:
     def __init__(self, model, lr=1e-3, device=None):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or Config.DEVICE if device is None else device
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
         self.criterion = nn.CrossEntropyLoss()

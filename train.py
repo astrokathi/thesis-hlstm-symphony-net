@@ -13,8 +13,10 @@ from torch.utils.tensorboard import SummaryWriter
 # -----------------------
 # Dataset for hierarchical 4-feature input
 # -----------------------
+from config import Config
+
 class MusicDataset(Dataset):
-    def __init__(self, token_path, seq_len=128, use_control_context=True, control_dim=128):
+    def __init__(self, token_path=Config.TOKEN_PATH, seq_len=Config.SEQ_LEN, use_control_context=True, control_dim=Config.CONTROL_DIM):
         with open(token_path, "rb") as f:
             data_list = pickle.load(f)
 
@@ -124,16 +126,16 @@ def calculate_metrics(loss):
 # Training loop
 # -----------------------
 def train_model(
-        token_path,
-        output_dir="models",
-        log_dir="runs/hlstm",
-        seq_len=128,
-        batch_size=32,
-        num_epochs=30,
-        lr=1e-3,
-        val_split=0.2,
+        token_path=Config.TOKEN_PATH,
+        output_dir=Config.OUTPUT_DIR,
+        log_dir=Config.LOG_DIR,
+        seq_len=Config.SEQ_LEN,
+        batch_size=Config.BATCH_SIZE,
+        num_epochs=Config.NUM_EPOCHS,
+        lr=Config.LR,
+        val_split=Config.VAL_SPLIT,
         resume_checkpoint=None,
-        patience=7
+        patience=Config.PATIENCE
 ):
     os.makedirs(output_dir, exist_ok=True)
     writer = SummaryWriter(log_dir)
@@ -161,7 +163,7 @@ def train_model(
     print(f"  --> Effective combined vocab size: {vocab_size:,}")
     print("=" * 60)
 
-    trainer = HLSTMTrainer(model, lr=lr, device="mps")
+    trainer = HLSTMTrainer(model, lr=lr, device=Config.DEVICE)
 
     # Resume checkpoint if provided
     start_epoch = 1
@@ -230,5 +232,5 @@ def train_model(
 
 if __name__ == "__main__":
     train_model(
-        "data/encoded/encoded_tokens_25_new.pkl", resume_checkpoint="models/hlstm_epoch_6.pt"
+        token_path=Config.TOKEN_PATH, resume_checkpoint="models/hlstm_epoch_6.pt"
     )

@@ -9,12 +9,14 @@ from visualize_metrics import GeneratorMetrics
 import matplotlib.pyplot as plt
 import wav_composer as wc
 
+from config import Config
+
 np.random.seed(42)
 
 # Load model & processor
 processor = HEventProcessor()
 
-INPUT_FILE_PATH = "test/20centuryfox.mid"
+INPUT_FILE_PATH = Config.INPUT_FILE
 
 song = muspy.read_midi(INPUT_FILE_PATH)
 d = processor.encode(song, 2)
@@ -44,7 +46,7 @@ generator = MusicGenerator(model, processor, device="mps")
 prompt_tokens = d['note_level']
 
 # LIST_OF_INSTRUMENTS = [56, 57, 58, 42, 60, 114]
-LIST_OF_INSTRUMENTS = [40, 41, 42, 43]
+LIST_OF_INSTRUMENTS = Config.INSTRUMENTS
 
 """
 CONTROL_PRESETS = {
@@ -59,9 +61,9 @@ CONTROL_PRESETS = {
     }
 """
 
-PRESET = "gentle"
-NUM_SAMPLES = 3
-STYLE = 1
+PRESET = Config.PRESET
+NUM_SAMPLES = Config.NUM_SAMPLES
+STYLE = Config.STYLE
 
 
 def plot_metrics(gen):

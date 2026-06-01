@@ -10,14 +10,16 @@ import pandas as pd
 from random import shuffle
 import random
 
+from config import Config
+
 # Seed for reproducibility
 random.seed(42)
 np.random.seed(42)
 
-DATA_DIR = "/Users/kathi.s/ML_Projects/thesis/data/SymphonyNet"
-ENCODED_PATH = "data/encoded/encoded_tokens_25_new.pkl"
-LIST_SUB_DIRECTORIES = ["classical", "contemporary"]
-MIN_FILES_PER_CLASS = 25
+DATA_DIR = Config.DATA_DIR
+ENCODED_PATH = Config.ENCODED_PATH
+LIST_SUB_DIRECTORIES = Config.SUB_DIRS
+MIN_FILES_PER_CLASS = Config.MIN_FILES
 
 processor = HEventProcessor()
 encoded_dataset = []
