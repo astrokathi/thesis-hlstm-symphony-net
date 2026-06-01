@@ -159,7 +159,17 @@ def train_model(
         persistent_workers=(num_workers > 0)
     )
 
-    model = HEventModel()
+    # --- Sprint 3: Pass model config flags ---
+    model = HEventModel(
+        use_position_encoding=Config.USE_POSITION_ENCODING,
+        num_positions=Config.NUM_POSITIONS,
+        use_checkpointing=Config.USE_CHECKPOINTING,
+    )
+
+    # --- Sprint 3: Optional torch.compile ---
+    if Config.USE_TORCH_COMPILE:
+        model.compile_model()
+
     vocab_size = (
             model.pitch_embed.num_embeddings +
             model.duration_embed.num_embeddings +
@@ -174,6 +184,8 @@ def train_model(
     print(f"  --> Effective combined vocab size: {vocab_size:,}")
     print(f"  DataLoader: num_workers={num_workers}, pin_memory={pin_memory}")
     print(f"  AMP: {Config.USE_AMP},  LR scheduler: {Config.LR_SCHEDULER}")
+    print(f"  Position encoding: {Config.USE_POSITION_ENCODING},  Checkpointing: {Config.USE_CHECKPOINTING}")
+    print(f"  torch.compile: {Config.USE_TORCH_COMPILE}")
     print("=" * 60)
 
     # --- Sprint 1: Parse loss weights from config ---

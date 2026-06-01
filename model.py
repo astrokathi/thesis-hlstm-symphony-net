@@ -2,11 +2,18 @@ import torch
 import torch.nn as nn
 import numpy as np
 from config import Config
+from torch.utils.checkpoint import checkpoint
+
 
 class HEventModel(nn.Module):
     """
     Hierarchical 3-layer LSTM for symbolic music modeling.
     Multi-feature input per note: [pitch, duration, velocity, instrument_id].
+
+    Sprint 3 upgrades:
+      - Optional bar/beat position encoding (5th channel in x when enabled)
+      - Gradient checkpointing for memory-efficient long-sequence training
+      - torch.compile support via .compile_model()
     """
 
     def __init__(self,
@@ -19,11 +26,16 @@ class HEventModel(nn.Module):
                  control_dim=Config.CONTROL_DIM,
                  hidden_dim=Config.HIDDEN_DIM,
                  dropout=Config.DROPOUT,
-                 device=Config.DEVICE):
+                 device=Config.DEVICE,
+                 use_position_encoding=False,
+                 num_positions=64,
+                 use_checkpointing=False):
         super(HEventModel, self).__init__()
 
         self.hidden_dim = hidden_dim
         self.embed_dim = embed_dim
+        self.use_position_encoding = use_position_encoding
+        self.use_checkpointing = use_checkpointing
 
         # Separate embeddings for each feature
         self.pitch_embed = nn.Embedding(num_pitches, embed_dim, device=device)
@@ -32,14 +44,20 @@ class HEventModel(nn.Module):
         self.instrument_embed = nn.Embedding(num_instruments, embed_dim, device=device)
         self.style_embed = nn.Embedding(style_classes, embed_dim, device=device)
 
+        # Sprint 3: Bar/beat position encoding
+        if use_position_encoding:
+            self.position_embed = nn.Embedding(num_positions, embed_dim // 4, device=device)
+            self.position_proj = nn.Linear(embed_dim // 4, hidden_dim, device=device)
+            self.num_positions = num_positions
+
         # Projection layers to match dimensions
-        self.embed_proj = nn.Linear(embed_dim, hidden_dim, device=device)  # Project embeddings to hidden_dim
+        self.embed_proj = nn.Linear(embed_dim, hidden_dim, device=device)
         self.style_proj = nn.Linear(embed_dim, hidden_dim, device=device)
         self.instr_proj = nn.Linear(embed_dim, hidden_dim, device=device)
         self.control_proj = nn.Linear(control_dim, hidden_dim, device=device)
 
         # 3-layer hierarchical LSTM
-        self.lstm1 = nn.LSTM(hidden_dim, hidden_dim, batch_first=True, device=device)  # Changed input to hidden_dim
+        self.lstm1 = nn.LSTM(hidden_dim, hidden_dim, batch_first=True, device=device)
         self.lstm2 = nn.LSTM(hidden_dim, hidden_dim, batch_first=True, device=device)
         self.lstm3 = nn.LSTM(hidden_dim, hidden_dim, batch_first=True, device=device)
 
@@ -58,9 +76,21 @@ class HEventModel(nn.Module):
         self.use_control_conditioning = True
 
         self.control_dim = control_dim
+        self._compiled = False
+
+    # ---- Sprint 3: LSTM forward helpers with optional checkpointing ----
+
+    def _lstm1_forward(self, x, h):
+        return self.lstm1(x, h)
+
+    def _lstm2_forward(self, x, h):
+        return self.lstm2(x, h)
+
+    def _lstm3_forward(self, x, h):
+        return self.lstm3(x, h)
 
     def forward(self, x, style=None, instr_context=None, control_context=None, hidden_states=None):
-        batch_size, seq_len, _ = x.size()
+        batch_size, seq_len, n_features = x.size()
         device = x.device
 
         # --- Extract input components ---
@@ -77,6 +107,13 @@ class HEventModel(nn.Module):
                 self.instrument_embed(instrument)
         )
         x_embed = self.embed_proj(x_embed)
+
+        # Sprint 3: Add bar/beat position encoding (5th channel, if present)
+        if self.use_position_encoding and n_features >= 5:
+            beat_pos = x[:, :, 4].long().clamp(0, self.num_positions - 1)
+            pos_emb = self.position_embed(beat_pos)
+            pos_emb = self.position_proj(pos_emb)
+            x_embed = x_embed + pos_emb
 
         # --- Prepare conditioning contexts ---
         style_emb = None
@@ -102,35 +139,40 @@ class HEventModel(nn.Module):
 
         # CONTROL conditioning - handle the shape properly
         if control_context is not None and self.use_control_conditioning:
-            # control_context shape: (batch_size, seq_len, control_dim)
             if control_context.dim() == 2:
-                # If it's (batch_size, control_dim), expand to sequence
                 control_context = control_context.unsqueeze(1).expand(-1, seq_len, -1)
             elif control_context.dim() == 3 and control_context.size(1) == 1:
-                # If it's (batch_size, 1, control_dim), expand to sequence length
                 control_context = control_context.expand(-1, seq_len, -1)
-
-            # Project control context to hidden dimension
             control_emb = self.control_proj(control_context.float())
 
-        # --- Hierarchical LSTM flow ---
-        # LSTM1 → STYLE conditioning (global characteristics)
+        # --- Hierarchical LSTM flow with optional gradient checkpointing ---
         lstm1_in = x_embed
         if style_emb is not None:
             lstm1_in = lstm1_in + style_emb
-        out1, h1 = self.lstm1(lstm1_in, None if hidden_states is None else hidden_states[0])
 
-        # LSTM2 → INSTRUMENT conditioning (instrument-specific patterns)
+        h0 = None if hidden_states is None else hidden_states[0]
+        if self.use_checkpointing and self.training:
+            out1, h1 = checkpoint(self._lstm1_forward, lstm1_in, h0, use_reentrant=False)
+        else:
+            out1, h1 = self.lstm1(lstm1_in, h0)
+
         lstm2_in = out1
         if instr_emb is not None:
             lstm2_in = lstm2_in + instr_emb
-        out2, h2 = self.lstm2(lstm2_in, None if hidden_states is None else hidden_states[1])
+        h1_state = None if hidden_states is None else hidden_states[1]
+        if self.use_checkpointing and self.training:
+            out2, h2 = checkpoint(self._lstm2_forward, lstm2_in, h1_state, use_reentrant=False)
+        else:
+            out2, h2 = self.lstm2(lstm2_in, h1_state)
 
-        # LSTM3 → CONTROL conditioning (expression, dynamics)
         lstm3_in = out2
         if control_emb is not None:
             lstm3_in = lstm3_in + control_emb
-        out3, h3 = self.lstm3(lstm3_in, None if hidden_states is None else hidden_states[2])
+        h2_state = None if hidden_states is None else hidden_states[2]
+        if self.use_checkpointing and self.training:
+            out3, h3 = checkpoint(self._lstm3_forward, lstm3_in, h2_state, use_reentrant=False)
+        else:
+            out3, h3 = self.lstm3(lstm3_in, h2_state)
 
         out3 = self.dropout(out3)
 
@@ -141,6 +183,18 @@ class HEventModel(nn.Module):
         instr_logits = self.instrument_out(out3)
 
         return pitch_logits, dur_logits, vel_logits, instr_logits, (h1, h2, h3)
+
+    # ---- Sprint 3: torch.compile support ----
+
+    def compile_model(self, backend="inductor", mode=None):
+        """Apply torch.compile to the forward pass for graph optimization."""
+        try:
+            self.forward = torch.compile(self.forward, backend=backend, mode=mode)
+            self._compiled = True
+            print(f"[COMPILE] Model compiled with backend='{backend}', mode={mode}")
+        except Exception as e:
+            print(f"[COMPILE] torch.compile failed ({e}), falling back to eager mode")
+        return self
 
 
 class HLSTMTrainer:

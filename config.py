@@ -27,6 +27,12 @@ class Config:
     OUTPUT_DIR = os.getenv("TRAIN_OUTPUT_DIR", "models")
     LOG_DIR = os.getenv("TRAIN_LOG_DIR", "runs/hlstm")
 
+    # Sprint 3 — Model architecture upgrades
+    USE_POSITION_ENCODING = os.getenv("MODEL_USE_POSITION_ENCODING", "false").lower() == "true"
+    NUM_POSITIONS = int(os.getenv("MODEL_NUM_POSITIONS", 64))
+    USE_CHECKPOINTING = os.getenv("MODEL_USE_CHECKPOINTING", "false").lower() == "true"
+    USE_TORCH_COMPILE = os.getenv("MODEL_USE_TORCH_COMPILE", "false").lower() == "true"
+
     # Sprint 1 — Training performance upgrades
     NUM_WORKERS = int(os.getenv("TRAIN_NUM_WORKERS", 2))
     PIN_MEMORY = os.getenv("TRAIN_PIN_MEMORY", "true").lower() == "true"
