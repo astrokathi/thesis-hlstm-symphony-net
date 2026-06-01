@@ -9,12 +9,85 @@ from collections import defaultdict
 import pandas as pd
 from random import shuffle
 import random
+import copy
 
 from config import Config
 
 # Seed for reproducibility
 random.seed(42)
 np.random.seed(42)
+
+# ---------------------------------------------------------------------------
+# Sprint 5 — Data augmentation strategies
+# ---------------------------------------------------------------------------
+
+def augment_pitch_transpose(song: muspy.Music, semitones: int) -> muspy.Music:
+    """Transpose all notes by a fixed number of semitones, clamping to [0, 127]."""
+    song = copy.deepcopy(song)
+    for track in song.tracks:
+        for note in track.notes:
+            note.pitch = int(np.clip(note.pitch + semitones, 0, 127))
+    return song
+
+
+def augment_tempo_scale(song: muspy.Music, factor: float) -> muspy.Music:
+    """Scale all note durations and tempos by a factor."""
+    song = copy.deepcopy(song)
+    for track in song.tracks:
+        for note in track.notes:
+            note.duration = max(1, int(note.duration * factor))
+            note.start = int(note.start * factor)
+    if song.tempos:
+        for tempo in song.tempos:
+            tempo.qpm = max(20, int(tempo.qpm / factor))
+    return song
+
+
+def augment_velocity_shift(song: muspy.Music, shift: int) -> muspy.Music:
+    """Add random velocity variation."""
+    song = copy.deepcopy(song)
+    for track in song.tracks:
+        for note in track.notes:
+            note.velocity = int(np.clip(note.velocity + shift, 1, 127))
+    return song
+
+
+def augment_reinstrument(song: muspy.Music, target_family: int) -> muspy.Music:
+    """
+    Re-orchestrate: shift all instrument programs toward a target family.
+    target_family: 0= piano, 1=chromatic percussion, 2=organ, 3=guitar, etc.
+    Maps each program to the base of the target family ± small offset.
+    """
+    song = copy.deepcopy(song)
+    for track in song.tracks:
+        base_program = target_family * 8
+        offset = random.randint(0, 7)
+        track.program = min(base_program + offset, 127)
+    return song
+
+
+def apply_augmentations(song: muspy.Music, style_id: int,
+                        prob: float = 0.3) -> list:
+    """Generate augmented copies of a song. Returns list of (song, style_id)."""
+    variants = [(song, style_id)]
+    rng = random.Random()
+
+    # Pitch transposition (±2, ±5 semitones)
+    for semitones in [-5, -2, 2, 5]:
+        if rng.random() < prob:
+            variants.append((augment_pitch_transpose(song, semitones), style_id))
+
+    # Tempo scaling (faster / slower)
+    for factor in [0.8, 1.25]:
+        if rng.random() < prob:
+            variants.append((augment_tempo_scale(song, factor), style_id))
+
+    # Velocity variation
+    for shift in [-15, 15]:
+        if rng.random() < prob:
+            variants.append((augment_velocity_shift(song, shift), style_id))
+
+    return variants
 
 DATA_DIR = Config.DATA_DIR
 ENCODED_PATH = Config.ENCODED_PATH
@@ -65,8 +138,8 @@ def analyze_and_visualize(df_song, df_instr):
     print(top_instr)
 
 
-def preprocess_dataset():
-    """Load, encode, pickle, and analyze SymphonyNet data."""
+def preprocess_dataset(enable_augmentation=False, use_fixed_bins=False):
+    """Load, encode (optionally augment), pickle, and analyze SymphonyNet data."""
     for subdir in os.listdir(DATA_DIR):
         if subdir in LIST_SUB_DIRECTORIES:
             files_list = os.listdir(os.path.join(DATA_DIR, subdir))
@@ -79,18 +152,22 @@ def preprocess_dataset():
                     # Assign a style ID based on folder
                     style_id = 0 if subdir == "classical" else 1
                     song = muspy.read_midi(song_path)
-                    # setting muspy attribute for the style
                     song.__setattr__("style_id", style_id)
-                    encoded = processor.encode(song, style_id)
-                    encoded_dataset.append(encoded)
-                    # Collect stats
-                    stats["song_name"].append(file)
-                    stats["num_instruments"].append(len(encoded["instr_level"]))
-                    stats["song_length"].append(encoded["song_level"][3])
-                    stats["avg_pitch"].append(np.mean(encoded["note_level"][:, 0]))
-                    stats["avg_velocity"].append(np.mean(encoded["note_level"][:, 2]))
-                    stats["style"].append(style_id)
-                    stats["instrument"].extend(list(encoded["instr_level"]))
+
+                    # Sprint 5: Data augmentation
+                    song_variants = apply_augmentations(song, style_id, prob=0.3) if enable_augmentation else [(song, style_id)]
+
+                    for aug_song, aug_style_id in song_variants:
+                        encoded = processor.encode(aug_song, aug_style_id, use_fixed_bins=use_fixed_bins)
+                        encoded_dataset.append(encoded)
+                        # Collect stats
+                        stats["song_name"].append(file)
+                        stats["num_instruments"].append(len(encoded["instr_level"]))
+                        stats["song_length"].append(encoded["song_level"][3])
+                        stats["avg_pitch"].append(np.mean(encoded["note_level"][:, 0]))
+                        stats["avg_velocity"].append(np.mean(encoded["note_level"][:, 2]))
+                        stats["style"].append(aug_style_id)
+                        stats["instrument"].extend(list(encoded["instr_level"]))
 
                 except Exception as e:
                     print(f"❌ Error processing {file}: {e}")

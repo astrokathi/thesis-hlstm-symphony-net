@@ -3,14 +3,25 @@ import numpy as np
 
 
 class HEventProcessor:
-    def __init__(self, num_duration_bins=128, generate_expression=True):
+    """Sprint 5: Configurable fixed or per-song duration binning."""
+
+    def __init__(self, num_duration_bins=128, generate_expression=True,
+                 duration_bin_edges=None, max_raw_duration=256.0):
         self.instrument_map = {}
         self.reverse_instrument_map = {i: i for i in range(128)}
         self.max_time = 0
         self.num_duration_bins = num_duration_bins
         self.generate_expression = generate_expression
+        self.duration_bin_edges = duration_bin_edges
+        self.max_raw_duration = max_raw_duration
 
-    def encode(self, song: muspy.Music, style_id: 0):
+    @staticmethod
+    def compute_log_bin_edges(num_bins=128, max_dur=256.0):
+        """Compute fixed log-spaced bin edges for global duration quantization."""
+        log_space = np.logspace(0, np.log1p(max_dur), num_bins + 1, base=np.e)
+        return np.expm1(log_space)
+
+    def encode(self, song: muspy.Music, style_id: 0, use_fixed_bins=False):
         note_level, instr_level, song_level, control_level = [], [], [], []
 
         tempo = np.mean([int(t.qpm) for t in song.tempos]) if song.tempos else 120
@@ -56,13 +67,27 @@ class HEventProcessor:
                         "value": cc.value
                     })
 
-        # Quantize durations (log-scaled)
-        raw_durations = np.array([n["duration"] for n in note_level])
-        if len(raw_durations) > 0:
-            log_durs = np.log1p(raw_durations)
-            log_durs = (log_durs / log_durs.max() * (self.num_duration_bins - 1)).astype(int)
+        # ----- Sprint 5: Duration quantization (fixed or per-song) -----
+        raw_durations = np.array([n["duration"] for n in note_level], dtype=np.float32)
+
+        if use_fixed_bins:
+            if self.duration_bin_edges is None:
+                self.duration_bin_edges = self.compute_log_bin_edges(
+                    self.num_duration_bins, self.max_raw_duration
+                )
+            log_durs = np.digitize(raw_durations, self.duration_bin_edges) - 1
+            log_durs = np.clip(log_durs, 0, self.num_duration_bins - 1).astype(int)
         else:
-            log_durs = np.zeros(len(note_level), dtype=int)
+            # Original per-song log-scaled binning
+            if len(raw_durations) > 0:
+                log_durs = np.log1p(raw_durations)
+                max_log = log_durs.max()
+                if max_log > 0:
+                    log_durs = (log_durs / max_log * (self.num_duration_bins - 1)).astype(int)
+                else:
+                    log_durs = np.zeros(len(note_level), dtype=int)
+            else:
+                log_durs = np.zeros(len(note_level), dtype=int)
 
         encoded_notes = self._encode_note_tokens(note_level, log_durs)
         encoded_instruments = encoded_notes[:, 3]
