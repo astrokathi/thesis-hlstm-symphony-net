@@ -13,11 +13,16 @@ Usage:
     32
 """
 
+import os
 from pathlib import Path
 from typing import List, Optional, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Resolve .env relative to the PROJECT root (parent of hlstm_framework/)
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
+_PROJECT_ENV_FILE = str(_PACKAGE_ROOT / ".env")
 
 
 class ModelConfig(BaseSettings):
@@ -194,7 +199,7 @@ class FrameworkSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_PROJECT_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
