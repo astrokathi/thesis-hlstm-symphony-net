@@ -12,7 +12,7 @@ data/encoded/
 data/encoded/*.pkl
 
 # Models / outputs
-models/
+# models/
 output/
 runs/
 assets/
@@ -31,3 +31,7 @@ assets/
 # OS
 .DS_Store
 Thumbs.db
+
+*.mid
+data/
+train-data/

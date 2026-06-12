@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 from typing import List, Optional, Literal
 
+from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -108,9 +109,9 @@ class TrainingConfig(BaseSettings):
     log_dir: str = Field("runs/hlstm", description="TensorBoard log directory")
 
     # --- Sprint 1: Performance ---
-    use_amp: bool = Field(True, description="Enable mixed precision training")
-    num_workers: int = Field(2, description="DataLoader worker processes")
-    pin_memory: bool = Field(True, description="Pin memory for faster GPU transfer")
+    use_amp: bool = Field(True, description="Enable mixed precision training (auto-disabled on MPS)")
+    num_workers: int = Field(2, description="DataLoader worker processes (auto-set to 0 on MPS)")
+    pin_memory: bool = Field(True, description="Pin memory for faster GPU transfer (auto-disabled on MPS)")
     loss_weights: str = Field(
         "1.0,1.0,1.0,1.0",
         description="Comma-separated loss weights: pitch,duration,velocity,instrument"
@@ -234,5 +235,10 @@ def load_settings(reload: bool = False) -> FrameworkSettings:
     """
     global _settings
     if _settings is None or reload:
+        # Load .env into os.environ FIRST so sub-configs (which read from environ
+        # via their env_prefix) pick up the values. pydantic-settings v2 does not
+        # propagate env_file from parent to nested default_factory models.
+        if os.path.exists(_PROJECT_ENV_FILE):
+            load_dotenv(_PROJECT_ENV_FILE, override=True)
         _settings = FrameworkSettings()
     return _settings

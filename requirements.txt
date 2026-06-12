@@ -16,4 +16,4 @@ torchinfo>=1.8
 joblib>=1.2
 
 # Optional: distributed training
-# ray[train]>=2.7
+ray[train]>=2.7
