@@ -388,7 +388,7 @@ class MusicGenerator:
                 x[0, -1, 2] = vel
                 x[0, -1, 3] = instr
 
-        midi_music = self._decode_output(generated, style)
+        midi_music, _ = self._decode_output(generated, style)
         return midi_music, np.array(generated, dtype=np.int16)
 
     def generate_with_preset(self, preset_name: str, **kwargs):
