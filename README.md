@@ -11,36 +11,24 @@ Built from the thesis: *"Generating a Symphony Using Hierarchical LSTM Networks:
 ## Quick Start
 
 ```bash
-# Install
+# 1. Install
 pip install -e .
 
-# Configure
+# 2. Configure
 cp .env.example .env
 # Edit .env: set DATA_DIR to your MIDI dataset path
 
-# Ingest dataset
+# 3. Ingest dataset
 python -c "from hlstm_framework.data import MusicDataPipeline; MusicDataPipeline().ingest()"
 
-# Train
-python -c "from hlstm_framework.models.trainer import train_model; train_model()"
+# 4. Train
+python execution_steps/e2e.py
 
-# Generate
-python -c "
-from hlstm_framework.data.encoding import HEventProcessor
-from hlstm_framework.models import HEventModel
-from hlstm_framework.generation import MusicGenerator
-import muspy
+# 5. Generate
+python execution_steps/generate.py                    # uses latest checkpoint
+python execution_steps/generate.py models/hlstm_epoch_5.pt  # custom checkpoint
 
-processor = HEventProcessor()
-model = HEventModel()
-model.load_state_dict(torch.load('models/hlstm_epoch_9.pt'))
-gen = MusicGenerator(model, processor)
-prompt = processor.encode(muspy.read_midi('test/prompt.mid'), 0)
-midi, tokens = gen.generate_with_preset('gentle', prompt_tokens=prompt['note_level'], style=0)
-midi.write_midi('output/generated.mid')
-"
-
-# Evaluate
+# 6. Evaluate
 python -c "
 from hlstm_framework.evaluation import MusicMetrics
 import muspy
@@ -87,6 +75,10 @@ hlstm_framework/
     ├── test_models.py
     ├── test_generation.py
     └── test_evaluation.py
+
+execution_steps/         # Ready-to-run scripts
+├── e2e.py               # End-to-end training
+└── generate.py          # Generate from checkpoint
 ```
 
 ---
@@ -203,15 +195,34 @@ history = trainer.train(train_loader, val_loader, num_epochs=30)
 
 ## Generation
 
+### Quick CLI (recommended)
+
+```bash
+python execution_steps/generate.py                          # default checkpoint
+python execution_steps/generate.py models/hlstm_epoch_5.pt  # custom checkpoint
+```
+
+The script handles checkpoint loading (extracts `model_state_dict` from trainer-saved dicts), creates the prompt from training data if missing, and writes output to `output/generated.mid`.
+
+### Programmatic API
+
 ```python
+import torch
 from hlstm_framework.generation import MusicGenerator
 from hlstm_framework.data.encoding import HEventProcessor
 from hlstm_framework.models import HEventModel
-import torch, muspy
+from hlstm_framework.config import load_settings
+import muspy
+
+device = load_settings().model.device
+
+# Load checkpoint (saved by HLSTMTrainer as dict with "model_state_dict")
+checkpoint = torch.load("models/hlstm_epoch_2.pt", map_location=device)
+model = HEventModel()
+model.load_state_dict(checkpoint["model_state_dict"])  # key difference!
+model.to(device)
 
 processor = HEventProcessor()
-model = HEventModel()
-model.load_state_dict(torch.load("models/hlstm_epoch_9.pt"))
 gen = MusicGenerator(model, processor)
 
 prompt = muspy.read_midi("test/prompt.mid")
@@ -230,6 +241,7 @@ midi, tokens = gen.generate_force_polyphonic(encoded["note_level"], style=0, not
 midi, tokens = gen.generate_with_preset("gentle", prompt_tokens=encoded["note_level"], style=1)
 
 midi.write_midi("output/generated.mid")
+print(f"Generated {len(tokens)} notes")
 ```
 
 ---
